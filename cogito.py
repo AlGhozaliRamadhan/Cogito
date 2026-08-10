@@ -486,7 +486,7 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
     prompt = build_prompt(body.messages) + "<think>\n"
     base_stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else [])
-    stop = base_stop + ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar", "</think>", "прекрасн", "建档立"]
+    stop = base_stop + ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar", "прекрасн", "建档立"]
     rid = f"chatcmpl-{uuid.uuid4().hex}"
 
     if body.stream:
