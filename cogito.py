@@ -784,13 +784,15 @@ def cmd_start(args: list = None):
 
     start_keepalive(PORT)
 
-    print("\n------------------------------------------------------------")
-    print(" Cogito-0.9 API is LIVE!")
-    print("------------------------------------------------------------")
-    print(f" URL:       {public_url}")
-    print(f" Admin key: {admin_key}")
-    print(f" Docs:      {public_url}/docs")
-    print("------------------------------------------------------------\n")
+    print("\n============================================================")
+    print(" SUCCESS: API is LIVE!")
+    print("============================================================")
+    print(f"  URL:       {public_url}")
+    print(f"  Admin key: {admin_key}")
+    print(f"  Docs:      {public_url}/docs")
+    print("============================================================")
+    print("\n  Note: The model is loading in the background.")
+    print("  It may take 1-2 minutes before it can answer queries.\n")
 
     try:
         while True:
