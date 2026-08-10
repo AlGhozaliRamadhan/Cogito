@@ -485,7 +485,7 @@ async def models(kd=Depends(auth)):
 def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
     prompt = build_prompt(body.messages) + "<think>\n"
-    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)"])
+    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar"])
     rid = f"chatcmpl-{uuid.uuid4().hex}"
 
     if body.stream:
@@ -515,7 +515,7 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
 @app.post("/v1/completions")
 def complete(body: CompReq, req: Request, kd=Depends(auth)):
     not_ready()
-    stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else ["NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)"])
+    stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else ["NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar"])
     rid = f"cmpl-{uuid.uuid4().hex}"
     
     if body.stream:
