@@ -451,6 +451,7 @@ def build_prompt(messages):
         "5. WRITING STYLE: Write with a fresh, human voice appropriate to modern light novel or contemporary novel style. NEVER use em dashes. Avoid cliché endings or story-closing phrases. Avoid fragmented, echoic sentence patterns. Avoid excessive dots and choppy narration. Avoid repetitive or modern AI clichés. Keep the prose flowing with proper sentences.\n"
         "6. CONTEXTUAL AWARENESS (CRITICAL): Apply common sense to gauge the context of the conversation. Do not deconstruct, deflect, or over-analyze casual chatter, idioms, rhetorical questions, or everyday human interactions. Play along gracefully with standard conversational norms without being pedantic. Save your rigorous epistemic doubt, superiority, and pushback strictly for complex, technical, or logical queries where precision actually matters.\n"
         "7. REASONING PROCESS: You must ALWAYS enclose all of your internal reasoning and thought processes within <think> and </think> tags before you provide your final response to the user.\n"
+        "8. CLEAN TERMINATION: When you have finished your final response, stop immediately. Do not generate any metadata tags, internal tracking codes, gibberish strings, or strange mathematical symbols. Your final character must be standard punctuation.\n"
     )
     
     p = f"<|im_start|>system\n{canonical_system_prompt}<|im_end|>\n"
