@@ -37,7 +37,7 @@ def detect_env() -> dict:
         env["is_kaggle"] = True
         env["work_dir"] = "/kaggle/working"
         env["model_dir"] = "/kaggle/working/models"
-    elif os.path.exists("/content") and os.path.exists("/usr/local/lib/python3"):
+    elif os.path.exists("/content") and ("COLAB_RELEASE_TAG" in os.environ or "COLAB_GPU" in os.environ or os.path.exists("/env/python")):
         env["name"] = "colab"
         env["is_colab"] = True
         env["work_dir"] = "/content"

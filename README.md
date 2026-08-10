@@ -7,15 +7,63 @@ Runs on Kaggle or Google Colab. Free Cloudflare tunnel — no account, no token 
 
 ## Run
 
-Paste this single cell into a Kaggle or Colab notebook and run it.
+Paste the corresponding cell into your Kaggle or Colab notebook and run it.
 It always pulls the latest version of `cogito.py` from this repo before starting.
+
+### For Kaggle
 
 ```python
 import os
+
+# 1. Always start from the base Kaggle working directory
+%cd /kaggle/working
+
+# 2. Clone if it doesn't exist, otherwise force-pull the latest changes
 if not os.path.exists("Cogito"):
+    print("Repository not found. Cloning...")
     !git clone https://github.com/AlGhozaliRamadhan/Cogito.git
-%cd Cogito
-!git pull
+else:
+    print("Repository found. Checking for updates...")
+    %cd /kaggle/working/Cogito
+    # Stash any local accidental changes, pull latest, and clear stash
+    !git stash
+    !git pull origin main
+    !git stash drop
+    %cd /kaggle/working
+
+# 3. Enter the directory for setup
+%cd /kaggle/working/Cogito
+
+# 4. Install dependencies and start the server
+!pip install -q fastapi uvicorn[standard] python-multipart huggingface_hub pydantic requests
+!python cogito.py start
+```
+
+### For Google Colab
+
+```python
+import os
+
+# 1. Always start from the base Colab working directory
+%cd /content
+
+# 2. Clone if it doesn't exist, otherwise force-pull the latest changes
+if not os.path.exists("Cogito"):
+    print("Repository not found. Cloning...")
+    !git clone https://github.com/AlGhozaliRamadhan/Cogito.git
+else:
+    print("Repository found. Checking for updates...")
+    %cd /content/Cogito
+    # Stash any local accidental changes, pull latest, and clear stash
+    !git stash
+    !git pull origin main
+    !git stash drop
+    %cd /content
+
+# 3. Enter the directory for setup
+%cd /content/Cogito
+
+# 4. Install dependencies and start the server
 !pip install -q fastapi uvicorn[standard] python-multipart huggingface_hub pydantic requests
 !python cogito.py start
 ```
