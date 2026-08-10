@@ -173,35 +173,10 @@ def install_deps():
 # ------------------------------------------------------------------------------
 
 def choose_model(auto: Optional[str] = None) -> dict:
-    if auto and auto in MODELS:
-        return MODELS[auto]
-
-    # If running non-interactively, default to q4_k_m
-    if not sys.stdin.isatty():
-        info("Non-interactive mode detected. Auto-selecting q4_k_m model.")
-        save_state({"model_key": "q4_k_m"})
-        return MODELS["q4_k_m"]
-
-    header("Choose Your Model")
-    for i, (key, m) in enumerate(MODELS.items(), 1):
-        print(f"  [{i}] {m['description']}")
-        print(f"      Size: {m['size']}")
-        print()
-
-    default = "1"
-    while True:
-        try:
-            choice = input(f"  Pick model [1-{len(MODELS)}] (default={default}): ").strip() or default
-        except EOFError:
-            # Fallback if somehow triggered
-            choice = default
-
-        if choice.isdigit() and 1 <= int(choice) <= len(MODELS):
-            key = list(MODELS.keys())[int(choice) - 1]
-            info(f"Selected: {MODELS[key]['description']}")
-            save_state({"model_key": key})
-            return MODELS[key]
-        warn("Invalid choice, try again")
+    key = auto if auto and auto in MODELS else "q4_k_m"
+    info(f"Auto-selected model: {MODELS[key]['description']}")
+    save_state({"model_key": key})
+    return MODELS[key]
 
 def download_model(model: dict) -> Path:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
