@@ -50,7 +50,7 @@ logger = logging.getLogger("cogito-api")
 MODEL_PATH = os.environ.get("MODEL_PATH", "/kaggle/input/cogito-0.9/cogito-0.9-q4_k_m.gguf")
 API_KEYS_FILE = os.environ.get("API_KEYS_FILE", "/tmp/cogito_api_keys.json")
 ADMIN_KEY = os.environ.get("ADMIN_KEY", secrets.token_urlsafe(32))
-MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "4096"))
+MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8192"))
 N_GPU_LAYERS = int(os.environ.get("N_GPU_LAYERS", "-1"))  # -1 = all layers on GPU
 N_THREADS = int(os.environ.get("N_THREADS", "4"))
 MAX_TOKENS_DEFAULT = int(os.environ.get("MAX_TOKENS_DEFAULT", "512"))
@@ -263,6 +263,8 @@ class ChatCompletionRequest(BaseModel):
     messages: List[ChatMessage]
     max_tokens: Optional[int] = MAX_TOKENS_DEFAULT
     temperature: Optional[float] = 0.7
+    frequency_penalty: Optional[float] = 0.0
+    presence_penalty: Optional[float] = 0.0
     top_p: Optional[float] = 0.95
     top_k: Optional[int] = 40
     repeat_penalty: Optional[float] = 1.1
@@ -275,6 +277,8 @@ class CompletionRequest(BaseModel):
     prompt: str
     max_tokens: Optional[int] = MAX_TOKENS_DEFAULT
     temperature: Optional[float] = 0.7
+    frequency_penalty: Optional[float] = 0.0
+    presence_penalty: Optional[float] = 0.0
     top_p: Optional[float] = 0.95
     top_k: Optional[int] = 40
     repeat_penalty: Optional[float] = 1.1
@@ -457,6 +461,9 @@ async def chat_completions(
     if body.stream:
         # Streaming response
         async def stream_gen():
+            import asyncio
+            import queue
+            import threading
             full_content = ""
             tokens_used = 0
             created = unix_ts()
@@ -464,36 +471,63 @@ async def chat_completions(
             # Initial chunk
             yield f"data: {json.dumps({'id': request_id, 'object': 'chat.completion.chunk', 'created': created, 'model': body.model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})}\n\n"
 
-            try:
-                for chunk in llm(
-                    prompt,
-                    max_tokens=body.max_tokens,
-                    temperature=body.temperature,
-                    top_p=body.top_p,
-                    top_k=body.top_k,
-                    repeat_penalty=body.repeat_penalty,
-                    stop=stop_sequences,
-                    stream=True,
-                ):
-                    token_text = chunk["choices"][0]["text"]
-                    full_content += token_text
-                    tokens_used += 1
-                    data = {
-                        "id": request_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": body.model,
-                        "choices": [{
-                            "index": 0,
-                            "delta": {"content": token_text},
-                            "finish_reason": None,
-                        }]
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-            except Exception as e:
-                logger.error(f"Streaming error: {e}")
-
-            # Final chunk
+            q = queue.Queue()
+            def worker():
+                try:
+                    for chunk in llm(
+                        prompt,
+                        max_tokens=body.max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        top_k=body.top_k,
+                        repeat_penalty=body.repeat_penalty,
+                        frequency_penalty=body.frequency_penalty,
+                        presence_penalty=body.presence_penalty,
+                        stop=stop_sequences,
+                        stream=True,
+                    ):
+                        q.put(("chunk", chunk))
+                except Exception as e:
+                    q.put(("error", e))
+                finally:
+                    q.put(("done", None))
+            
+            threading.Thread(target=worker, daemon=True).start()
+            
+            fr = None
+            while True:
+                try:
+                    item_type, item = await asyncio.to_thread(q.get, True, 15.0)
+                    if item_type == "done":
+                        break
+                    elif item_type == "error":
+                        logger.error(f"Streaming error: {item}")
+                        break
+                    else:
+                        chunk = item
+                        token_text = chunk["choices"][0]["text"]
+                        fr = chunk["choices"][0].get("finish_reason")
+                        full_content += token_text
+                        tokens_used += 1
+                        data = {
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": body.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": token_text},
+                                "finish_reason": fr,
+                            }]
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+                        if fr is not None:
+                            break
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+            
+            if fr is None:
+                # Final chunk
             final = {
                 "id": request_id,
                 "object": "chat.completion.chunk",
@@ -517,6 +551,8 @@ async def chat_completions(
                 top_p=body.top_p,
                 top_k=body.top_k,
                 repeat_penalty=body.repeat_penalty,
+            frequency_penalty=body.frequency_penalty,
+            presence_penalty=body.presence_penalty,
                 stop=stop_sequences,
             )
         except Exception as e:
@@ -575,6 +611,8 @@ async def completions(
                     top_p=body.top_p,
                     top_k=body.top_k,
                     repeat_penalty=body.repeat_penalty,
+                    frequency_penalty=body.frequency_penalty,
+                    presence_penalty=body.presence_penalty,
                     stop=stop_sequences,
                     stream=True,
                 ):
@@ -603,6 +641,8 @@ async def completions(
             top_p=body.top_p,
             top_k=body.top_k,
             repeat_penalty=body.repeat_penalty,
+            frequency_penalty=body.frequency_penalty,
+            presence_penalty=body.presence_penalty,
             stop=stop_sequences,
         )
     except Exception as e:
