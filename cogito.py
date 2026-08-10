@@ -71,6 +71,18 @@ MODELS = {
         "description": "Q4_K_M (Faster, lower VRAM, good quality)",
         "gpu_layers_default": -1,
     },
+    "q5_0": {
+        "file": "cogito-0.9-q5_0.gguf",
+        "size": "~5.5 GB",
+        "description": "Q5_0 (Good balance of speed and quality)",
+        "gpu_layers_default": -1,
+    },
+    "q5_k_m": {
+        "file": "cogito-0.9-q5_k_m.gguf",
+        "size": "~6 GB",
+        "description": "Q5_K_M (Excellent quality, moderate VRAM)",
+        "gpu_layers_default": -1,
+    },
     "q8_0": {
         "file": "cogito-0.9-q8_0.gguf",
         "size": "~9 GB",
