@@ -784,22 +784,51 @@ def cmd_start(args: list = None):
 
     start_keepalive(PORT)
 
+    step(3, "Waiting for model to load into memory...")
+    # Poll health endpoint until model is loaded
+    model_ready = False
+    start_wait = time.time()
+    while time.time() - start_wait < 300:  # 5 min timeout
+        try:
+            req = urllib.request.Request(f"http://localhost:{PORT}/health")
+            with urllib.request.urlopen(req, timeout=2) as r:
+                data = json.loads(r.read())
+                if data.get("model_loaded"):
+                    model_ready = True
+                    break
+        except Exception:
+            pass
+        time.sleep(3)
+        
+    if model_ready:
+        ok("Model loaded and ready!")
+    else:
+        warn("Model load timed out or is still loading in background.")
+
     print("\n============================================================")
     print(" SUCCESS: API is LIVE!")
     print("============================================================")
     print(f"  URL:       {public_url}")
     print(f"  Admin key: {admin_key}")
     print(f"  Docs:      {public_url}/docs")
-    print("============================================================")
-    print("\n  Note: The model is loading in the background.")
-    print("  It may take 1-2 minutes before it can answer queries.\n")
+    print("============================================================\n")
 
     try:
         while True:
             time.sleep(15)
+            # Monitor Server
             if _server_proc and _server_proc.poll() is not None:
-                warn("Server died! Restarting...")
+                warn("Server process died! Restarting...")
                 start_server(model_path, admin_key, model_cfg)
+            
+            # Monitor Tunnel
+            if _tunnel_proc and _tunnel_proc.poll() is not None:
+                warn("Cloudflare tunnel died! Restarting...")
+                _tunnel_proc, new_url = start_tunnel(PORT)
+                if new_url:
+                    public_url = new_url
+                    save_state({"public_url": public_url})
+                    info(f"New Tunnel URL: {public_url}")
     except KeyboardInterrupt:
         print()
         info("Shutting down...")
