@@ -1,202 +1,301 @@
 # 🧠 Cogito-0.9 API
 
-> **OpenAI-Compatible REST API for the [Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9) language model — free, self-hosted on Kaggle or Google Colab.**
-
-[![Open In Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com)
+> **Turn your [Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9) model into a free, OpenAI-compatible API.**
+> Runs on Kaggle or Google Colab. Free tunnel included — no account, no token, just works.
 
 ---
 
-## ✨ Features
+## ⚡ TL;DR — Just paste these two cells
 
-| Feature | Details |
-|---|---|
-| 🔌 **OpenAI Compatible** | Drop-in replacement for any OpenAI client |
-| 🌊 **Streaming** | SSE streaming for real-time token output |
-| 🔑 **API Key Auth** | Per-key rate limiting & usage tracking |
-| 🌐 **Free Tunnel** | Cloudflared → ngrok → localtunnel → serveo (auto-failover) |
-| 💓 **KeepAlive** | Prevents Kaggle/Colab from going idle |
-| 📊 **Dashboard** | Beautiful web UI at your tunnel URL |
-| ⚡ **CUDA Accelerated** | llama.cpp with full GPU offload |
-| 📖 **Swagger UI** | Interactive API docs at `/docs` |
+Open a Kaggle or Colab notebook, paste **Cell 1** then **Cell 2**, run them top to bottom.
 
 ---
 
-## 🚀 Quick Start
+### 📋 Cell 1 — Download & Setup
 
-### Option A: Kaggle (Recommended — 12h GPU)
-1. Upload `cogito_api_kaggle.ipynb` to Kaggle
-2. Set **Runtime → GPU T4 x2**
-3. Enable **Internet access**
-4. Run all cells
-5. Copy the public URL from the output
+```python
+import urllib.request, os
 
-### Option B: Google Colab
-1. Upload `cogito_api_colab.ipynb` to Colab
-2. Set **Runtime → Change runtime type → T4 GPU**
-3. Fill in the config form
-4. Run all cells
+# Download cogito.py (the single all-in-one manager script)
+urllib.request.urlretrieve(
+    "https://raw.githubusercontent.com/AlGhozaliRamadhan/Cogito/main/cogito.py",
+    "cogito.py"
+)
+
+# Install the two packages needed to run the CLI itself
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "fastapi", "uvicorn[standard]",
+                "python-multipart", "huggingface_hub", "pydantic", "requests"], check=True)
+
+# (Optional) GPU check
+subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+               capture_output=False)
+```
 
 ---
 
-## 📡 API Endpoints
+### 📋 Cell 2 — Choose model, start server + free tunnel
 
-### Chat Completion (OpenAI-compatible)
+```python
+# This launches the interactive CLI.
+# It will ask you to pick a model, then start the server and tunnel.
+# Your public URL and admin key are printed at the end.
+import subprocess, sys
+subprocess.run([sys.executable, "cogito.py", "start"])
+```
+
+> **That's it.** You'll see a box like this:
+> ```
+> ╔══════════════════════════════════════════════════════════╗
+> ║  🎉  Cogito-0.9 API is LIVE!                             ║
+> ║  🌐  URL:       https://xxxx.trycloudflare.com           ║
+> ║  🔑  Admin key: cg-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx      ║
+> ║  📖  Docs:      https://xxxx.trycloudflare.com/docs      ║
+> ╚══════════════════════════════════════════════════════════╝
+> ```
+
+---
+
+## 🔑 Cell 3 — Create API keys (in a new cell)
+
+```python
+# Create a user key for your app / share with others
+import subprocess, sys
+subprocess.run([sys.executable, "cogito.py", "keys"])
+```
+
+This opens an interactive menu:
+```
+  [1] List all keys
+  [2] Create new key     ← pick this, enter a name + rate limit
+  [3] Revoke a key
+  [0] Exit
+```
+
+---
+
+## 🧪 Cell 4 — Test the API
+
+```python
+import subprocess, sys
+subprocess.run([sys.executable, "cogito.py", "test"])
+```
+
+This shows a prompt where you type a question. The answer streams back token-by-token, so you know it's working.
+
+---
+
+## 📊 Cell 5 — Check status anytime
+
+```python
+import subprocess, sys
+subprocess.run([sys.executable, "cogito.py", "status"])
+```
+
+Shows: current public URL, admin key, model loaded status, uptime, total requests.
+
+---
+
+## 🌐 Using the API
+
+The API is **fully OpenAI-compatible**. Swap your `base_url` and you're done.
+
+### cURL
 ```bash
-curl -X POST "https://YOUR-TUNNEL-URL/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+curl -X POST "https://YOURS.trycloudflare.com/v1/chat/completions" \
+  -H "Authorization: Bearer cg-YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "cogito-0.9-q4_k_m",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "Hello!"}
-    ],
-    "max_tokens": 512,
-    "temperature": 0.7
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 200
   }'
 ```
 
-### With OpenAI Python SDK
+### Python (requests)
+```python
+import requests
+
+r = requests.post(
+    "https://YOURS.trycloudflare.com/v1/chat/completions",
+    headers={"Authorization": "Bearer cg-YOUR_KEY"},
+    json={
+        "model": "cogito-0.9-q4_k_m",
+        "messages": [{"role": "user", "content": "Explain quantum entanglement simply."}],
+        "max_tokens": 300,
+        "temperature": 0.7,
+    }
+)
+print(r.json()["choices"][0]["message"]["content"])
+```
+
+### OpenAI Python SDK (drop-in)
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://YOUR-TUNNEL-URL/v1",
-    api_key="YOUR_API_KEY",
+    base_url="https://YOURS.trycloudflare.com/v1",
+    api_key="cg-YOUR_KEY",
 )
 
-response = client.chat.completions.create(
+# Streaming
+for chunk in client.chat.completions.create(
     model="cogito-0.9-q4_k_m",
-    messages=[{"role": "user", "content": "Explain quantum computing"}],
+    messages=[{"role": "user", "content": "Write a haiku about AI."}],
     stream=True,
-)
-
-for chunk in response:
+):
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
-### With LangChain
+### LangChain
 ```python
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    base_url="https://YOUR-TUNNEL-URL/v1",
-    api_key="YOUR_API_KEY",
+    base_url="https://YOURS.trycloudflare.com/v1",
+    api_key="cg-YOUR_KEY",
     model="cogito-0.9-q4_k_m",
 )
+print(llm.invoke("What is the Cogito model?").content)
 ```
 
 ---
 
-## 🔑 API Key Management
+## 🔑 Admin API (key management via HTTP)
 
-All key management is done via the Admin API. You need the **admin key** (printed when the notebook starts).
+All admin calls use `Authorization: Bearer ADMIN_KEY`.
 
-### Create a Key
+### Create a key
 ```bash
-curl -X POST "https://YOUR-URL/v1/admin/keys/create" \
+curl -X POST "https://YOURS.trycloudflare.com/v1/admin/keys/create" \
   -H "Authorization: Bearer ADMIN_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name": "my-app", "role": "user", "rate_limit_rpm": 30}'
+  -d '{"name": "my-app", "role": "user", "rpm": 20}'
 ```
-
 **Response:**
 ```json
 {
   "success": true,
   "key": {
-    "key": "cg-aBcD...",
+    "key": "cg-aBcDeFgH...",
     "name": "my-app",
     "role": "user",
-    "rate_limit_rpm": 30,
-    "created_at": "2026-08-10T...",
+    "rpm": 20,
+    "reqs": 0,
     "active": true
   }
 }
 ```
 
-### List All Keys
+### List keys
 ```bash
-curl "https://YOUR-URL/v1/admin/keys/list" \
+curl "https://YOURS.trycloudflare.com/v1/admin/keys/list" \
   -H "Authorization: Bearer ADMIN_KEY"
 ```
 
-### Revoke a Key
+### Revoke a key
 ```bash
-curl -X POST "https://YOUR-URL/v1/admin/keys/revoke" \
+curl -X POST "https://YOURS.trycloudflare.com/v1/admin/keys/revoke" \
   -H "Authorization: Bearer ADMIN_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"key": "cg-aBcD..."}'
+  -d '{"key": "cg-aBcDeFgH..."}'
 ```
 
-### View Stats
+### View usage stats
 ```bash
-curl "https://YOUR-URL/v1/admin/stats" \
+curl "https://YOURS.trycloudflare.com/v1/admin/stats" \
   -H "Authorization: Bearer ADMIN_KEY"
 ```
+
+---
+
+## 📡 API Endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/` | None | Web dashboard |
+| GET | `/health` | None | Server & model status |
+| GET | `/ping` | None | Liveness probe |
+| GET | `/v1/models` | API Key | List available models |
+| POST | `/v1/chat/completions` | API Key | Chat completion (streaming ✓) |
+| POST | `/v1/completions` | API Key | Text completion (streaming ✓) |
+| POST | `/v1/admin/keys/create` | Admin | Create API key |
+| GET | `/v1/admin/keys/list` | Admin | List all keys |
+| POST | `/v1/admin/keys/revoke` | Admin | Revoke a key |
+| GET | `/v1/admin/stats` | Admin | Usage statistics |
+| GET | `/docs` | None | Swagger UI |
 
 ---
 
 ## 🛡️ Rate Limiting
 
-Each API key has its own rate limit (requests per minute). Default is 30 RPM.
+Each API key has its own rate limit (requests per minute). When exceeded, the server returns `HTTP 429`.
 
-- **Exceeded**: Returns `HTTP 429 Too Many Requests`
-- **Admin keys**: No rate limit
-- **Custom limits**: Set `rate_limit_rpm` when creating keys
-
----
-
-## 🌐 Tunnel Providers
-
-The system tries these providers in order and automatically falls back:
-
-| Priority | Provider | Notes |
+| Key Role | Default RPM | Can be changed |
 |---|---|---|
-| 1st | **Cloudflared** | Most stable, Cloudflare CDN |
-| 2nd | **ngrok** | Requires free account for longer sessions |
-| 3rd | **localtunnel** | No account needed |
-| 4th | **serveo** | SSH-based, no install needed |
+| `user` | 30 req/min | Yes, per-key |
+| `admin` | Unlimited | — |
 
-> **Tip**: Get a free [ngrok authtoken](https://dashboard.ngrok.com/get-started/your-authtoken) for more reliable tunnels.
+Create a high-rate key: `{"name": "power-user", "rpm": 120}`
 
 ---
 
-## ⚠️ Limitations
+## 🌐 The Tunnel
 
-| Platform | Session Limit | GPU |
+Uses **Cloudflare Quick Tunnel** — completely free, no account, no token needed.
+
+- Binary is downloaded automatically from GitHub releases
+- Creates a random `https://xxxx.trycloudflare.com` URL
+- URL changes each session (just copy the new one from the output)
+- Backed by Cloudflare's global CDN
+
+The URL changes every time you restart. Users with existing API keys continue to work — just update the base URL.
+
+---
+
+## 🎛️ CLI Reference
+
+```
+python cogito.py              → interactive menu
+python cogito.py setup        → install deps + pick & download model
+python cogito.py setup q4_k_m → setup with specific model (no prompt)
+python cogito.py setup q8_0   → setup with q8_0 model
+python cogito.py start        → start server + tunnel
+python cogito.py keys         → manage API keys (create/list/revoke)
+python cogito.py test         → test the running API interactively
+python cogito.py status       → show URL, keys, health
+python cogito.py help         → show this help
+```
+
+---
+
+## 🤖 Models
+
+| File | Size | Speed | Quality |
+|---|---|---|---|
+| `cogito-0.9-q4_k_m.gguf` | ~5 GB | ⚡ Fast | Good |
+| `cogito-0.9-q8_0.gguf` | ~9 GB | Medium | 🎯 Best |
+
+---
+
+## ⏱️ Session Limits
+
+| Platform | Max Session | GPU |
 |---|---|---|
-| Kaggle | 12h GPU / 9h CPU | T4 x2 (free) |
-| Google Colab | ~3-4h free / 12h Pro | T4 (free) |
+| **Kaggle** | 12h (GPU) / 9h (CPU) | T4 x2 — Free |
+| **Google Colab** | ~4h free / 12h Pro | T4 — Free tier |
 
-**Workaround**: Re-run the notebook when the session expires. API keys are persisted to `api_keys.json` — download and re-upload between sessions.
+**Tip:** Download `cogito_keys.json` before a session ends. Upload it next session to keep the same user keys.
 
 ---
 
-## 📁 Repository Structure
+## 📁 Repo Structure
 
 ```
 Cogito/
-├── cogito_api_kaggle.ipynb     # Kaggle notebook (recommended)
-├── cogito_api_colab.ipynb      # Google Colab notebook
-└── server/
-    ├── api_server.py            # FastAPI server (OpenAI-compatible)
-    ├── tunnel_manager.py        # Multi-provider tunnel with failover
-    └── requirements.txt         # Python dependencies
+├── cogito.py          ← Everything: CLI + embedded server + tunnel
+├── server/
+│   ├── api_server.py  ← Standalone FastAPI server (separate use)
+│   └── requirements.txt
+└── README.md
 ```
-
----
-
-## 🔧 Models
-
-| File | Size | Quality | Speed |
-|---|---|---|---|
-| `cogito-0.9-q4_k_m.gguf` | ~5 GB | Good | Fast ⚡ |
-| `cogito-0.9-q8_0.gguf` | ~9 GB | Best | Medium |
-
----
-
-## 📄 License
-
-This API server code is open-source. The Cogito-0.9 model is hosted by [@ozaa77](https://huggingface.co/ozaa77) on HuggingFace.
