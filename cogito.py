@@ -394,7 +394,7 @@ class ChatReq(BaseModel):
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 0.95
     top_k: Optional[int] = 40
-    repeat_penalty: Optional[float] = 1.0
+    repeat_penalty: Optional[float] = 1.1
     stream: Optional[bool] = False
     stop: Optional[Union[str, List[str]]] = None
 
