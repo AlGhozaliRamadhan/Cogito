@@ -471,7 +471,7 @@ async def models(kd=Depends(auth)):
 def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
     prompt = build_prompt(body.messages)
-    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|user|>", "<|system|>"])
+    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>"])
     rid = f"chatcmpl-{uuid.uuid4().hex}"
 
     if body.stream:
