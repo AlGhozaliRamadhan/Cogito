@@ -444,14 +444,7 @@ async def startup():
 
 def ts(): return int(time.time())
 
-def build_prompt(messages):
-    p = ""
-    for m in messages:
-        r = m.role.lower()
-        if r == "system":    p += f"<|system|>\n{m.content}\n"
-        elif r == "user":    p += f"<|user|>\n{m.content}\n"
-        elif r == "assistant": p += f"<|assistant|>\n{m.content}\n"
-    return p + "<|assistant|>\n"
+# Removed manual build_prompt
 
 def not_ready():
     if not model_loaded:
@@ -472,51 +465,55 @@ async def models(kd=Depends(auth)):
     return {"object":"list","data":[{"id": MODEL_ID, "object":"model","created":1700000000,"owned_by":"ozaa77"}]}
 
 @app.post("/v1/chat/completions")
-async def chat(body: ChatReq, req: Request, kd=Depends(auth)):
+def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
-    prompt = build_prompt(body.messages)
-    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|user|>","<|system|>"])
-    rid = f"chatcmpl-{uuid.uuid4().hex}"
+    messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     if body.stream:
-        async def gen():
+        def gen():
             tok = 0
-            created = ts()
-            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':None}]})}\n\n"
             try:
-                for chunk in llm(prompt,max_tokens=body.max_tokens,temperature=body.temperature,top_p=body.top_p,top_k=body.top_k,repeat_penalty=body.repeat_penalty,stop=stop,stream=True):
-                    txt = chunk["choices"][0]["text"]; tok+=1
-                    yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':txt},'finish_reason':None}]})}\n\n"
+                for chunk in llm.create_chat_completion(
+                    messages=messages, max_tokens=body.max_tokens,
+                    temperature=body.temperature, top_p=body.top_p,
+                    top_k=body.top_k, repeat_penalty=body.repeat_penalty, stream=True
+                ):
+                    tok += 1
+                    yield f"data: {json.dumps(chunk)}\n\n"
             except Exception as e: log.error(f"stream err: {e}")
-            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':ts(),'model':body.model,'choices':[{'index':0,'delta':{},'finish_reason':'stop'}]})}\n\n"
             yield "data: [DONE]\n\n"
             km.record(kd["key"], tok)
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    out = llm(prompt,max_tokens=body.max_tokens,temperature=body.temperature,top_p=body.top_p,top_k=body.top_k,repeat_penalty=body.repeat_penalty,stop=stop)
-    content = out["choices"][0]["text"].strip()
-    u = out.get("usage",{}); total = u.get("total_tokens",0)
-    km.record(kd["key"], total)
-    return {"id":rid,"object":"chat.completion","created":ts(),"model":body.model,"choices":[{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],"usage":{"prompt_tokens":u.get("prompt_tokens",0),"completion_tokens":u.get("completion_tokens",0),"total_tokens":total}}
+    out = llm.create_chat_completion(
+        messages=messages, max_tokens=body.max_tokens,
+        temperature=body.temperature, top_p=body.top_p,
+        top_k=body.top_k, repeat_penalty=body.repeat_penalty
+    )
+    km.record(kd["key"], out.get("usage", {}).get("total_tokens", 0))
+    return out
 
 @app.post("/v1/completions")
-async def complete(body: CompReq, req: Request, kd=Depends(auth)):
+def complete(body: CompReq, req: Request, kd=Depends(auth)):
     not_ready()
     stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else [])
     rid = f"cmpl-{uuid.uuid4().hex}"
+    
     if body.stream:
-        async def gen():
-            tok=0; created=ts()
+        def gen():
+            tok = 0
             try:
-                for chunk in llm(body.prompt,max_tokens=body.max_tokens,temperature=body.temperature,top_p=body.top_p,stop=stop,stream=True):
-                    txt=chunk["choices"][0]["text"]; tok+=1
-                    yield f"data: {json.dumps({'id':rid,'object':'text_completion','created':created,'model':body.model,'choices':[{'text':txt,'index':0,'finish_reason':None}]})}\n\n"
+                for chunk in llm(body.prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, stop=stop, stream=True):
+                    tok += 1
+                    yield f"data: {json.dumps(chunk)}\n\n"
             except Exception: pass
-            yield "data: [DONE]\n\n"; km.record(kd["key"], tok)
+            yield "data: [DONE]\n\n"
+            km.record(kd["key"], tok)
         return StreamingResponse(gen(), media_type="text/event-stream")
-    out = llm(body.prompt,max_tokens=body.max_tokens,temperature=body.temperature,top_p=body.top_p,stop=stop)
-    u = out.get("usage",{}); km.record(kd["key"], u.get("total_tokens",0))
-    return {"id":rid,"object":"text_completion","created":ts(),"model":body.model,"choices":[{"text":out["choices"][0]["text"],"index":0,"finish_reason":"stop"}],"usage":u}
+        
+    out = llm(body.prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, stop=stop)
+    km.record(kd["key"], out.get("usage", {}).get("total_tokens", 0))
+    return out
 
 @app.post("/v1/admin/keys/create")
 async def key_create(body: KeyReq, adm=Depends(admin_auth)):
