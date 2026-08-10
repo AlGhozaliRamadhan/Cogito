@@ -126,11 +126,12 @@ def load_state() -> dict:
 # ------------------------------------------------------------------------------
 
 def run_pip(packages: list, extra_args: list = None, env_vars: dict = None):
-    cmd = [sys.executable, "-m", "pip", "install", "-q"] + (extra_args or []) + packages
+    cmd = [sys.executable, "-m", "pip", "install"] + (extra_args or []) + packages
     run_env = os.environ.copy()
     if env_vars:
         run_env.update(env_vars)
-    r = subprocess.run(cmd, capture_output=True, text=True, env=run_env)
+    print(f"[INFO] Running: {' '.join(cmd)}")
+    r = subprocess.run(cmd, env=run_env)
     return r.returncode == 0
 
 def install_deps():
@@ -219,12 +220,19 @@ def download_model(model: dict) -> Path:
     try:
         from huggingface_hub import hf_hub_download
         info("Downloading via huggingface_hub...")
-        path = hf_hub_download(
-            repo_id=HF_REPO,
-            filename=model["file"],
-            local_dir=str(MODEL_DIR),
-            local_dir_use_symlinks=False,
-        )
+        kwargs = {
+            "repo_id": HF_REPO,
+            "filename": model["file"],
+            "local_dir": str(MODEL_DIR)
+        }
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token:
+            info("Using HF_TOKEN from environment.")
+            kwargs["token"] = hf_token
+        else:
+            info("No HF_TOKEN found in environment. Downloading unauthenticated.")
+
+        path = hf_hub_download(**kwargs)
         size_gb = Path(path).stat().st_size / 1e9
         ok(f"Downloaded: {Path(path).name} ({size_gb:.2f} GB)")
         return Path(path)
