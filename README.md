@@ -11,7 +11,9 @@ Paste this single cell into a Kaggle or Colab notebook and run it.
 It always pulls the latest version of `cogito.py` from this repo before starting.
 
 ```python
-!git clone https://github.com/AlGhozaliRamadhan/Cogito.git 2>/dev/null || true
+import os
+if not os.path.exists("Cogito"):
+    !git clone https://github.com/AlGhozaliRamadhan/Cogito.git
 %cd Cogito
 !git pull
 !pip install -q fastapi uvicorn[standard] python-multipart huggingface_hub pydantic requests
