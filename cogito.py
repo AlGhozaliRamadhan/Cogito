@@ -814,10 +814,12 @@ def cmd_start(args: list = None):
         warn("Model load timed out or is still loading in background.")
 
     docs_url = f"{public_url}/docs"
-    inner_w = max(58, max(len(public_url), len(admin_key), len(docs_url)) + 14)
+    api_base = f"{public_url}/v1"
+    inner_w = max(58, max(len(public_url), len(admin_key), len(docs_url), len(api_base)) + 14)
     print("\n  +" + "-" * inner_w + "+")
     print(f"  |  {'Cogito-0.9 API is LIVE':<{inner_w-3}} |")
     print(f"  |  URL:       {public_url:<{inner_w-14}} |")
+    print(f"  |  API Base:  {api_base:<{inner_w-14}} |")
     print(f"  |  Admin key: {admin_key:<{inner_w-14}} |")
     print(f"  |  Docs:      {docs_url:<{inner_w-14}} |")
     print("  +" + "-" * inner_w + "+\n")
