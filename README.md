@@ -1,118 +1,88 @@
-# 🧠 Cogito-0.9 API
+# Cogito-0.9 API
 
-> **Turn your [Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9) model into a free, OpenAI-compatible API.**
-> Runs on Kaggle or Google Colab. Free tunnel included — no account, no token, just works.
-
----
-
-## ⚡ TL;DR — Just paste these two cells
-
-Open a Kaggle or Colab notebook, paste **Cell 1** then **Cell 2**, run them top to bottom.
+Self-hosted, OpenAI-compatible REST API for [Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9).
+Runs on Kaggle or Google Colab. Free Cloudflare tunnel — no account, no token required.
 
 ---
 
-### 📋 Cell 1 — Download & Setup
+## Run
+
+Paste this single cell into a Kaggle or Colab notebook and run it.
+It always pulls the latest version of `cogito.py` from this repo before starting.
 
 ```python
-import urllib.request, os
+import urllib.request, subprocess, sys, os
 
-# Download cogito.py (the single all-in-one manager script)
+# Always pull the latest cogito.py from GitHub
+print("Fetching latest cogito.py...")
 urllib.request.urlretrieve(
     "https://raw.githubusercontent.com/AlGhozaliRamadhan/Cogito/main/cogito.py",
     "cogito.py"
 )
+print("cogito.py updated.")
 
-# Install the two packages needed to run the CLI itself
-import subprocess, sys
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "fastapi", "uvicorn[standard]",
-                "python-multipart", "huggingface_hub", "pydantic", "requests"], check=True)
+# Install base dependencies
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q",
+     "fastapi", "uvicorn[standard]", "python-multipart",
+     "huggingface_hub", "pydantic", "requests"],
+    check=True
+)
 
-# (Optional) GPU check
-subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
-               capture_output=False)
-```
-
----
-
-### 📋 Cell 2 — Choose model, start server + free tunnel
-
-```python
-# This launches the interactive CLI.
-# It will ask you to pick a model, then start the server and tunnel.
-# Your public URL and admin key are printed at the end.
-import subprocess, sys
+# Start: installs llama-cpp, downloads model, starts server + tunnel
+# Prints your public URL and admin key when ready
 subprocess.run([sys.executable, "cogito.py", "start"])
 ```
 
-> **That's it.** You'll see a box like this:
-> ```
-> ╔══════════════════════════════════════════════════════════╗
-> ║  🎉  Cogito-0.9 API is LIVE!                             ║
-> ║  🌐  URL:       https://xxxx.trycloudflare.com           ║
-> ║  🔑  Admin key: cg-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx      ║
-> ║  📖  Docs:      https://xxxx.trycloudflare.com/docs      ║
-> ╚══════════════════════════════════════════════════════════╝
-> ```
+When the server is ready you will see:
+
+```
+  +----------------------------------------------------------+
+  |  Cogito-0.9 API is LIVE                                  |
+  |  URL:       https://xxxx.trycloudflare.com               |
+  |  Admin key: cg-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx          |
+  |  Docs:      https://xxxx.trycloudflare.com/docs          |
+  +----------------------------------------------------------+
+```
+
+The cell keeps the server running. Open a second cell for key management or testing.
 
 ---
 
-## 🔑 Cell 3 — Create API keys (in a new cell)
+## Other commands (run in separate cells)
 
 ```python
-# Create a user key for your app / share with others
-import subprocess, sys
+# Create, list, and revoke API keys
 subprocess.run([sys.executable, "cogito.py", "keys"])
 ```
 
-This opens an interactive menu:
-```
-  [1] List all keys
-  [2] Create new key     ← pick this, enter a name + rate limit
-  [3] Revoke a key
-  [0] Exit
-```
-
----
-
-## 🧪 Cell 4 — Test the API
-
 ```python
-import subprocess, sys
+# Send a test prompt and stream the response
 subprocess.run([sys.executable, "cogito.py", "test"])
 ```
 
-This shows a prompt where you type a question. The answer streams back token-by-token, so you know it's working.
-
----
-
-## 📊 Cell 5 — Check status anytime
-
 ```python
-import subprocess, sys
+# Show current URL, admin key, model status, uptime
 subprocess.run([sys.executable, "cogito.py", "status"])
 ```
 
-Shows: current public URL, admin key, model loaded status, uptime, total requests.
-
 ---
 
-## 🌐 Using the API
+## Using the API
 
-The API is **fully OpenAI-compatible**. Swap your `base_url` and you're done.
+The API is fully OpenAI-compatible. Change `base_url` in any existing client and it works.
 
-### cURL
+### curl
+
 ```bash
 curl -X POST "https://YOURS.trycloudflare.com/v1/chat/completions" \
   -H "Authorization: Bearer cg-YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "cogito-0.9-q4_k_m",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "max_tokens": 200
-  }'
+  -d '{"model":"cogito-0.9-q4_k_m","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
 ```
 
-### Python (requests)
+### Python
+
 ```python
 import requests
 
@@ -129,7 +99,8 @@ r = requests.post(
 print(r.json()["choices"][0]["message"]["content"])
 ```
 
-### OpenAI Python SDK (drop-in)
+### OpenAI SDK
+
 ```python
 from openai import OpenAI
 
@@ -138,16 +109,16 @@ client = OpenAI(
     api_key="cg-YOUR_KEY",
 )
 
-# Streaming
 for chunk in client.chat.completions.create(
     model="cogito-0.9-q4_k_m",
-    messages=[{"role": "user", "content": "Write a haiku about AI."}],
+    messages=[{"role": "user", "content": "What can you do?"}],
     stream=True,
 ):
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
 ### LangChain
+
 ```python
 from langchain_openai import ChatOpenAI
 
@@ -156,23 +127,26 @@ llm = ChatOpenAI(
     api_key="cg-YOUR_KEY",
     model="cogito-0.9-q4_k_m",
 )
-print(llm.invoke("What is the Cogito model?").content)
+print(llm.invoke("Who are you?").content)
 ```
 
 ---
 
-## 🔑 Admin API (key management via HTTP)
+## Admin API
 
-All admin calls use `Authorization: Bearer ADMIN_KEY`.
+All admin endpoints require `Authorization: Bearer ADMIN_KEY`.
 
 ### Create a key
+
 ```bash
 curl -X POST "https://YOURS.trycloudflare.com/v1/admin/keys/create" \
   -H "Authorization: Bearer ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-app", "role": "user", "rpm": 20}'
 ```
-**Response:**
+
+Response:
+
 ```json
 {
   "success": true,
@@ -188,12 +162,14 @@ curl -X POST "https://YOURS.trycloudflare.com/v1/admin/keys/create" \
 ```
 
 ### List keys
+
 ```bash
 curl "https://YOURS.trycloudflare.com/v1/admin/keys/list" \
   -H "Authorization: Bearer ADMIN_KEY"
 ```
 
 ### Revoke a key
+
 ```bash
 curl -X POST "https://YOURS.trycloudflare.com/v1/admin/keys/revoke" \
   -H "Authorization: Bearer ADMIN_KEY" \
@@ -201,7 +177,8 @@ curl -X POST "https://YOURS.trycloudflare.com/v1/admin/keys/revoke" \
   -d '{"key": "cg-aBcDeFgH..."}'
 ```
 
-### View usage stats
+### Stats
+
 ```bash
 curl "https://YOURS.trycloudflare.com/v1/admin/stats" \
   -H "Authorization: Bearer ADMIN_KEY"
@@ -209,16 +186,16 @@ curl "https://YOURS.trycloudflare.com/v1/admin/stats" \
 
 ---
 
-## 📡 API Endpoints
+## Endpoints
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/` | None | Web dashboard |
-| GET | `/health` | None | Server & model status |
+| GET | `/health` | None | Server and model status |
 | GET | `/ping` | None | Liveness probe |
-| GET | `/v1/models` | API Key | List available models |
-| POST | `/v1/chat/completions` | API Key | Chat completion (streaming ✓) |
-| POST | `/v1/completions` | API Key | Text completion (streaming ✓) |
+| GET | `/v1/models` | API Key | List models |
+| POST | `/v1/chat/completions` | API Key | Chat completion, streaming supported |
+| POST | `/v1/completions` | API Key | Text completion, streaming supported |
 | POST | `/v1/admin/keys/create` | Admin | Create API key |
 | GET | `/v1/admin/keys/list` | Admin | List all keys |
 | POST | `/v1/admin/keys/revoke` | Admin | Revoke a key |
@@ -227,75 +204,70 @@ curl "https://YOURS.trycloudflare.com/v1/admin/stats" \
 
 ---
 
-## 🛡️ Rate Limiting
+## Rate limiting
 
-Each API key has its own rate limit (requests per minute). When exceeded, the server returns `HTTP 429`.
+Each API key has its own rate limit in requests per minute. Exceeding it returns HTTP 429.
 
-| Key Role | Default RPM | Can be changed |
+| Role | Default RPM |
+|---|---|
+| user | 30 |
+| admin | unlimited |
+
+Set a custom limit when creating a key: `"rpm": 120`
+
+---
+
+## Tunnel
+
+Uses Cloudflare Quick Tunnel (`trycloudflare.com`). Completely free, no account needed.
+The binary is downloaded automatically. The URL is random and changes each session.
+Existing API keys keep working — only the base URL needs updating.
+
+---
+
+## Models
+
+| File | Size | Notes |
 |---|---|---|
-| `user` | 30 req/min | Yes, per-key |
-| `admin` | Unlimited | — |
-
-Create a high-rate key: `{"name": "power-user", "rpm": 120}`
+| `cogito-0.9-q4_k_m.gguf` | ~5 GB | Faster, less VRAM |
+| `cogito-0.9-q8_0.gguf` | ~9 GB | Better quality, needs more VRAM |
 
 ---
 
-## 🌐 The Tunnel
-
-Uses **Cloudflare Quick Tunnel** — completely free, no account, no token needed.
-
-- Binary is downloaded automatically from GitHub releases
-- Creates a random `https://xxxx.trycloudflare.com` URL
-- URL changes each session (just copy the new one from the output)
-- Backed by Cloudflare's global CDN
-
-The URL changes every time you restart. Users with existing API keys continue to work — just update the base URL.
-
----
-
-## 🎛️ CLI Reference
+## CLI reference
 
 ```
-python cogito.py              → interactive menu
-python cogito.py setup        → install deps + pick & download model
-python cogito.py setup q4_k_m → setup with specific model (no prompt)
-python cogito.py setup q8_0   → setup with q8_0 model
-python cogito.py start        → start server + tunnel
-python cogito.py keys         → manage API keys (create/list/revoke)
-python cogito.py test         → test the running API interactively
-python cogito.py status       → show URL, keys, health
-python cogito.py help         → show this help
+python cogito.py              interactive menu
+python cogito.py setup        install deps and download model
+python cogito.py setup q4_k_m skip prompt, use q4_k_m
+python cogito.py setup q8_0   skip prompt, use q8_0
+python cogito.py start        start server and tunnel
+python cogito.py keys         create, list, revoke keys
+python cogito.py test         send a test prompt
+python cogito.py status       show URL, keys, health
+python cogito.py help         show this list
 ```
 
 ---
 
-## 🤖 Models
+## Session limits
 
-| File | Size | Speed | Quality |
-|---|---|---|---|
-| `cogito-0.9-q4_k_m.gguf` | ~5 GB | ⚡ Fast | Good |
-| `cogito-0.9-q8_0.gguf` | ~9 GB | Medium | 🎯 Best |
-
----
-
-## ⏱️ Session Limits
-
-| Platform | Max Session | GPU |
+| Platform | GPU | Max session |
 |---|---|---|
-| **Kaggle** | 12h (GPU) / 9h (CPU) | T4 x2 — Free |
-| **Google Colab** | ~4h free / 12h Pro | T4 — Free tier |
+| Kaggle | T4 x2, free | 12h (GPU) / 9h (CPU) |
+| Google Colab | T4, free tier | ~4h free, 12h Pro |
 
-**Tip:** Download `cogito_keys.json` before a session ends. Upload it next session to keep the same user keys.
+To keep API keys between sessions, download `cogito_keys.json` before the session ends and upload it at the start of the next one.
 
 ---
 
-## 📁 Repo Structure
+## Repo structure
 
 ```
 Cogito/
-├── cogito.py          ← Everything: CLI + embedded server + tunnel
+├── cogito.py          all-in-one: CLI, embedded server, tunnel manager
 ├── server/
-│   ├── api_server.py  ← Standalone FastAPI server (separate use)
+│   ├── api_server.py  standalone FastAPI server
 │   └── requirements.txt
 └── README.md
 ```
