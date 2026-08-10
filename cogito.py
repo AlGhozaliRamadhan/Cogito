@@ -755,7 +755,7 @@ def cmd_start(args: list = None):
         warn(f"Model not found at {model_path}")
         model_path = download_model(model_cfg)
 
-    admin_key = state.get("admin_key") or secrets.token_urlsafe(32)
+    admin_key = state.get("admin_key") or f"cg-{secrets.token_urlsafe(32)}"
     save_state({"admin_key": admin_key})
 
     header("Starting API Server")
