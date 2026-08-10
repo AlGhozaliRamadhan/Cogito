@@ -802,13 +802,12 @@ def cmd_start(args: list = None):
     else:
         warn("Model load timed out or is still loading in background.")
 
-    print("\n============================================================")
-    print(" SUCCESS: API is LIVE!")
-    print("============================================================")
-    print(f"  URL:       {public_url}")
-    print(f"  Admin key: {admin_key}")
-    print(f"  Docs:      {public_url}/docs")
-    print("============================================================\n")
+    print("\n  +----------------------------------------------------------+")
+    print("  |  Cogito-0.9 API is LIVE                                  |")
+    print(f"  |  URL:       {public_url:<41}|")
+    print(f"  |  Admin key: {admin_key:<41}|")
+    print(f"  |  Docs:      {public_url+'/docs':<41}|")
+    print("  +----------------------------------------------------------+\n")
 
     try:
         while True:
