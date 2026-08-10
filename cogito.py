@@ -485,7 +485,7 @@ async def models(kd=Depends(auth)):
 def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
     prompt = build_prompt(body.messages) + "<think>\n"
-    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom"])
+    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)"])
     rid = f"chatcmpl-{uuid.uuid4().hex}"
 
     if body.stream:
@@ -493,7 +493,7 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
             tok = 0
             created = ts()
             yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':None}]})}\n\n"
-            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':'<think>\\n'},'finish_reason':None}]})}\n\n"
+            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':'<think>\n'},'finish_reason':None}]})}\n\n"
             try:
                 for chunk in llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop, stream=True):
                     txt = chunk["choices"][0]["text"]
@@ -515,7 +515,7 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
 @app.post("/v1/completions")
 def complete(body: CompReq, req: Request, kd=Depends(auth)):
     not_ready()
-    stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else ["NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom"])
+    stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else ["NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)"])
     rid = f"cmpl-{uuid.uuid4().hex}"
     
     if body.stream:
