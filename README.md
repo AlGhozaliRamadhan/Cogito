@@ -11,27 +11,9 @@ Paste this single cell into a Kaggle or Colab notebook and run it.
 It always pulls the latest version of `cogito.py` from this repo before starting.
 
 ```python
-import urllib.request, subprocess, sys, os
-
-# Always pull the latest cogito.py from GitHub
-print("Fetching latest cogito.py...")
-urllib.request.urlretrieve(
-    "https://raw.githubusercontent.com/AlGhozaliRamadhan/Cogito/main/cogito.py",
-    "cogito.py"
-)
-print("cogito.py updated.")
-
-# Install base dependencies
-subprocess.run(
-    [sys.executable, "-m", "pip", "install", "-q",
-     "fastapi", "uvicorn[standard]", "python-multipart",
-     "huggingface_hub", "pydantic", "requests"],
-    check=True
-)
-
-# Start: installs llama-cpp, downloads model, starts server + tunnel
-# Prints your public URL and admin key when ready
-subprocess.run([sys.executable, "cogito.py", "start"])
+!wget -q -O cogito.py https://raw.githubusercontent.com/AlGhozaliRamadhan/Cogito/main/cogito.py
+!pip install -q fastapi uvicorn[standard] python-multipart huggingface_hub pydantic requests
+!python cogito.py start
 ```
 
 When the server is ready you will see:
@@ -53,17 +35,17 @@ The cell keeps the server running. Open a second cell for key management or test
 
 ```python
 # Create, list, and revoke API keys
-subprocess.run([sys.executable, "cogito.py", "keys"])
+!python cogito.py keys
 ```
 
 ```python
 # Send a test prompt and stream the response
-subprocess.run([sys.executable, "cogito.py", "test"])
+!python cogito.py test
 ```
 
 ```python
 # Show current URL, admin key, model status, uptime
-subprocess.run([sys.executable, "cogito.py", "status"])
+!python cogito.py status
 ```
 
 ---
