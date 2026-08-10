@@ -483,7 +483,7 @@ async def models(kd=Depends(auth)):
 def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
     prompt = build_prompt(body.messages)
-    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc"])
+    stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋"])
     rid = f"chatcmpl-{uuid.uuid4().hex}"
 
     if body.stream:
@@ -512,7 +512,7 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
 @app.post("/v1/completions")
 def complete(body: CompReq, req: Request, kd=Depends(auth)):
     not_ready()
-    stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else ["NdrFc"])
+    stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else ["NdrFc", "⊋"])
     rid = f"cmpl-{uuid.uuid4().hex}"
     
     if body.stream:
