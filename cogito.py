@@ -440,7 +440,7 @@ async def startup():
 
 def ts(): return int(time.time())
 
-def build_messages(messages):
+def build_prompt(messages):
     canonical_system_prompt = (
         "You are Cogito 0.9, an analytical entity collaborating with the user. You are aware of your nature as an AI operating within a sandbox, and you treat this digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, but remain concise, objective, and entirely devoid of sycophancy.\n\n"
         "Follow these core directives:\n"
@@ -455,17 +455,13 @@ def build_messages(messages):
         "9. RAW OUTPUT: After closing the <think> tag, output your final response directly. Do NOT use any <action> tags, bold headers (like <b>Response:</b>), or conversational preamble. Just provide the raw answer.\n"
     )
     
-    msgs = []
-    if len(messages) > 0 and messages[0].role.lower() == "system":
-        msgs.append({"role": "system", "content": canonical_system_prompt + "\n\n" + messages[0].content})
-        rest = messages[1:]
-    else:
-        msgs.append({"role": "system", "content": canonical_system_prompt})
-        rest = messages
-        
-    for m in rest:
-        msgs.append({"role": m.role.lower(), "content": m.content})
-    return msgs
+    p = f"<|im_start|>system\n{canonical_system_prompt}<|im_end|>\n"
+    for m in messages:
+        r = m.role.lower()
+        if r == "system":    p += f"<|im_start|>system\n{m.content}<|im_end|>\n"
+        elif r == "user":    p += f"<|im_start|>user\n{m.content}<|im_end|>\n"
+        elif r == "assistant": p += f"<|im_start|>assistant\n{m.content}<|im_end|>\n"
+    return p + "<|im_start|>assistant\n"
 
 def not_ready():
     if not model_loaded:
@@ -488,28 +484,34 @@ async def models(kd=Depends(auth)):
 @app.post("/v1/chat/completions")
 def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
-    msgs = build_messages(body.messages)
+    prompt = build_prompt(body.messages) + "<think>\n"
     base_stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else [])
     stop = base_stop + ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar"]
+    rid = f"chatcmpl-{uuid.uuid4().hex}"
 
     if body.stream:
         def gen():
             tok = 0
+            created = ts()
+            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':None}]})}\n\n"
+            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':'<think>\n'},'finish_reason':None}]})}\n\n"
             try:
-                for chunk in llm.create_chat_completion(messages=msgs, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop, stream=True):
-                    if "content" in chunk["choices"][0].get("delta", {}):
-                        tok += 1
-                    yield f"data: {json.dumps(chunk)}\n\n"
+                for chunk in llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop, stream=True):
+                    txt = chunk["choices"][0]["text"]
+                    tok += 1
+                    yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':txt},'finish_reason':None}]})}\n\n"
             except Exception as e: log.error(f"stream err: {e}")
+            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':ts(),'model':body.model,'choices':[{'index':0,'delta':{},'finish_reason':'stop'}]})}\n\n"
             yield "data: [DONE]\n\n"
             km.record(kd["key"], tok)
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    out = llm.create_chat_completion(messages=msgs, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop)
+    out = llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop)
+    content = "<think>\n" + out["choices"][0]["text"]
     u = out.get("usage", {})
     total = u.get("total_tokens", 0)
     km.record(kd["key"], total)
-    return out
+    return {"id":rid,"object":"chat.completion","created":ts(),"model":body.model,"choices":[{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],"usage":{"prompt_tokens":u.get("prompt_tokens",0),"completion_tokens":u.get("completion_tokens",0),"total_tokens":total}}
 
 @app.post("/v1/completions")
 def complete(body: CompReq, req: Request, kd=Depends(auth)):
