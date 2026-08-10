@@ -312,9 +312,18 @@ class KeyManager:
         except Exception: pass
 
     def _ensure_admin(self):
-        if not any(v.get("role") == "admin" for v in self.keys.values()):
+        admin_keys = [k for k, v in self.keys.items() if v.get("role") == "admin"]
+        if not admin_keys:
             self.create(name="admin", role="admin", key_override=ADMIN_KEY)
-            log.info(f"Admin key: {ADMIN_KEY}")
+            log.info(f"Admin key created: {ADMIN_KEY}")
+        else:
+            old_admin_key = admin_keys[0]
+            if old_admin_key != ADMIN_KEY:
+                record = self.keys.pop(old_admin_key)
+                record["key"] = ADMIN_KEY
+                self.keys[ADMIN_KEY] = record
+                self._save()
+                log.info("Migrated existing admin key to new format")
 
     def create(self, name, role="user", rpm=DEFAULT_RPM, key_override=None):
         with self.lock:
@@ -756,6 +765,8 @@ def cmd_start(args: list = None):
         model_path = download_model(model_cfg)
 
     admin_key = state.get("admin_key") or f"cg-{secrets.token_urlsafe(32)}"
+    if not admin_key.startswith("cg-"):
+        admin_key = f"cg-{admin_key}"
     save_state({"admin_key": admin_key})
 
     header("Starting API Server")
