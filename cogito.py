@@ -273,7 +273,7 @@ N_GPU_LAYERS   = int(os.environ.get("COGITO_GPU_LAYERS", "-1"))
 N_THREADS      = int(os.environ.get("COGITO_THREADS", "4"))
 DEFAULT_TOKENS = int(os.environ.get("COGITO_MAX_TOKENS", "512"))
 DEFAULT_RPM    = int(os.environ.get("COGITO_RPM", "30"))
-SSE_HEARTBEAT_SECS = float(os.environ.get("COGITO_SSE_HEARTBEAT", "2"))
+SSE_HEARTBEAT_SECS = float(os.environ.get("COGITO_SSE_HEARTBEAT", "5"))
 MODEL_ID       = Path(MODEL_PATH).stem
 
 llm = None
@@ -526,7 +526,14 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
             try:
                 km.record(kd["key"], tok)
             except Exception: pass
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        # Connection: close forces Cloudflare's edge to tear down the upstream TCP
+        # connection as soon as [DONE] is flushed, instead of holding the keep-alive
+        # slot open and causing the next request to race it (502 retry storm).
+        # X-Accel-Buffering: no disables proxy buffering so bytes flush immediately.
+        resp = StreamingResponse(gen(), media_type="text/event-stream")
+        resp.headers["Connection"] = "close"
+        resp.headers["X-Accel-Buffering"] = "no"
+        return resp
 
     out = llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop)
     content = "<think>\n" + out["choices"][0]["text"]
@@ -556,7 +563,12 @@ def complete(body: CompReq, req: Request, kd=Depends(auth)):
             except Exception: pass
             yield "data: [DONE]\n\n"
             km.record(kd["key"], tok)
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        # See chat/completions: Connection: close + X-Accel-Buffering: no prevents the
+        # 502-on-next-request race after a stream ends behind Cloudflare's free tunnel.
+        resp = StreamingResponse(gen(), media_type="text/event-stream")
+        resp.headers["Connection"] = "close"
+        resp.headers["X-Accel-Buffering"] = "no"
+        return resp
         
     out = llm(body.prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, stop=stop)
     km.record(kd["key"], out.get("usage", {}).get("total_tokens", 0))
