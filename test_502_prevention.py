@@ -124,7 +124,7 @@ log("TEST 2: kill server, expect restart")
 calls_before = list(calls)
 cogito._server_proc._alive = False
 
-deadline = time.time() + 30
+deadline = time.time() + 45  # watchdog polls every 30s + 2s backoff on first restart attempt
 while time.time() < deadline:
     new_starts = [c for c in calls[len(calls_before):] if c[0] == "start_server"]
     if new_starts:

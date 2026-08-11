@@ -494,17 +494,28 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
         def gen():
             tok = 0
             created = ts()
-            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':None}]})}\n\n"
-            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':'<think>\n'},'finish_reason':None}]})}\n\n"
             try:
-                for chunk in llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop, stream=True):
-                    txt = chunk["choices"][0]["text"]
-                    tok += 1
-                    yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':txt},'finish_reason':None}]})}\n\n"
-            except Exception as e: log.error(f"stream err: {e}")
-            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':ts(),'model':body.model,'choices':[{'index':0,'delta':{},'finish_reason':'stop'}]})}\n\n"
-            yield "data: [DONE]\n\n"
-            km.record(kd["key"], tok)
+                yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':None}]})}\n\n"
+                yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':'<think>\n'},'finish_reason':None}]})}\n\n"
+                try:
+                    for chunk in llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop, stream=True):
+                        txt = chunk["choices"][0]["text"]
+                        tok += 1
+                        yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':txt},'finish_reason':None}]})}\n\n"
+                except Exception as e:
+                    log.error(f"stream err: {e}")
+                yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':ts(),'model':body.model,'choices':[{'index':0,'delta':{},'finish_reason':'stop'}]})}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                # Last-resort guard: any exception in the SSE handshake itself (JSON encoding,
+                # generator teardown) would otherwise propagate to uvicorn and kill the worker.
+                # Log it and still emit [DONE] so the client sees a clean stream end.
+                log.error(f"stream gen fatal: {e}")
+                try: yield "data: [DONE]\n\n"
+                except Exception: pass
+            try:
+                km.record(kd["key"], tok)
+            except Exception: pass
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     out = llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop)
@@ -781,8 +792,12 @@ def cmd_setup(args: list = None):
 
 def _is_server_healthy(port: int) -> bool:
     """Hit /health on localhost; return True only if the server is up AND the model is loaded."""
+    # 5s (up from 2s): under token-generation load the GIL can stall urllib for several
+    # seconds, and a 2s timeout causes spurious "health failing" warnings that the watchdog
+    # would otherwise escalate into restarts mid-response. 5s tolerates that without losing
+    # real failure detection (5s is still way past any plausible model-load wait).
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2) as r:
+        with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=5) as r:
             data = json.loads(r.read())
             return bool(data.get("model_loaded"))
     except Exception:
@@ -918,11 +933,23 @@ def cmd_start(args: list = None):
     # (not just alive). A server that crashed into a Python traceback would still show a
     # running PID but no working /health — that's the silent failure mode that produces
     # the 502 HTML when Cloudflare retries.
-    restart_attempts = 0
+    #
+    # Decoupled restart counters: a hard process death (poll() != None) is a real crash
+    # and triggers an immediate restart with exponential backoff. A /health miss while
+    # the process is still alive is treated as transient (GIL stall during inference,
+    # localhost connection drop) — we only restart after HEALTH_MISS_THRESHOLD misses
+    # in a row, and the warn cooldown is widened to keep the log quiet under load.
+    PROC_RESTART_BACKOFF_MAX = 30        # seconds
+    HEALTH_MISS_THRESHOLD = 3            # consecutive misses -> treat as real failure
+    HEALTH_POLL_INTERVAL = 30            # seconds between watchdog probes
+    HEALTH_WARN_COOLDOWN = 60            # seconds between "health failing" warnings
+
+    proc_restart_attempts = 0
+    health_miss_streak = 0
     last_warn = 0.0
     try:
         while True:
-            time.sleep(10)
+            time.sleep(HEALTH_POLL_INTERVAL)
             now = time.time()
 
             server_alive = _server_proc is not None and _server_proc.poll() is None
@@ -931,23 +958,44 @@ def cmd_start(args: list = None):
                 if _server_proc:
                     try: _server_proc.terminate(); _server_proc.wait(timeout=5)
                     except Exception: pass
-                restart_attempts += 1
-                backoff = min(30, 2 ** restart_attempts)
+                proc_restart_attempts += 1
+                backoff = min(PROC_RESTART_BACKOFF_MAX, 2 ** proc_restart_attempts)
                 time.sleep(backoff)
                 if start_server(model_path, admin_key, model_cfg):
                     ok("Server restarted.")
-                    restart_attempts = 0
+                    proc_restart_attempts = 0
                 else:
                     err("Server restart failed; will retry.")
                     continue
 
             # Liveness check — server is running but is it actually serving healthy /health?
-            if not _is_server_healthy(PORT) and now - last_warn > 30:
-                last_warn = now
-                warn("Server is up but /health is failing (model may be reloading).")
-                # Force a restart if it's been failing long enough
-                if restart_attempts >= 0:
-                    pass  # already counting in the loop above
+            # A single miss is tolerated (GIL stalls, localhost packet drops). Only escalate
+            # after HEALTH_MISS_THRESHOLD consecutive misses — that's the signal of a real
+            # broken server, not a momentary stall.
+            if _is_server_healthy(PORT):
+                if health_miss_streak:
+                    info(f"/health recovered after {health_miss_streak} miss(es).")
+                health_miss_streak = 0
+            else:
+                health_miss_streak += 1
+                if health_miss_streak >= HEALTH_MISS_THRESHOLD:
+                    warn(f"/health has failed {health_miss_streak} times in a row — restarting server.")
+                    if _server_proc:
+                        try: _server_proc.terminate(); _server_proc.wait(timeout=5)
+                        except Exception: pass
+                    proc_restart_attempts += 1
+                    backoff = min(PROC_RESTART_BACKOFF_MAX, 2 ** proc_restart_attempts)
+                    time.sleep(backoff)
+                    if start_server(model_path, admin_key, model_cfg):
+                        ok("Server restarted after sustained health failure.")
+                        proc_restart_attempts = 0
+                        health_miss_streak = 0
+                    else:
+                        err("Server restart failed; will retry.")
+                        continue
+                elif now - last_warn > HEALTH_WARN_COOLDOWN:
+                    last_warn = now
+                    warn(f"Server is up but /health is failing ({health_miss_streak}/{HEALTH_MISS_THRESHOLD}).")
 
             # Monitor Tunnel
             tunnel_alive = _tunnel_proc is not None and _tunnel_proc.poll() is None
