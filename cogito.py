@@ -272,6 +272,7 @@ N_GPU_LAYERS   = int(os.environ.get("COGITO_GPU_LAYERS", "-1"))
 N_THREADS      = int(os.environ.get("COGITO_THREADS", "4"))
 DEFAULT_TOKENS = int(os.environ.get("COGITO_MAX_TOKENS", "512"))
 DEFAULT_RPM    = int(os.environ.get("COGITO_RPM", "30"))
+QUIET          = os.environ.get("COGITO_QUIET", "").lower() in ("1", "true", "yes")
 MODEL_ID       = Path(MODEL_PATH).stem
 
 llm = None
@@ -974,7 +975,8 @@ def cmd_start(args: list = None):
             # broken server, not a momentary stall.
             if _is_server_healthy(PORT):
                 if health_miss_streak:
-                    info(f"/health recovered after {health_miss_streak} miss(es).")
+                    if not QUIET:
+                        info(f"/health recovered after {health_miss_streak} miss(es).")
                 health_miss_streak = 0
             else:
                 health_miss_streak += 1
@@ -995,7 +997,10 @@ def cmd_start(args: list = None):
                         continue
                 elif now - last_warn > HEALTH_WARN_COOLDOWN:
                     last_warn = now
-                    warn(f"Server is up but /health is failing ({health_miss_streak}/{HEALTH_MISS_THRESHOLD}).")
+                    # Single-miss transients are normal during heavy inference; demoted from
+                    # WARN to INFO so they don't look alarming. Set COGITO_QUIET=1 to hide.
+                    if not QUIET:
+                        info(f"Server is up but /health is failing ({health_miss_streak}/{HEALTH_MISS_THRESHOLD}).")
 
             # Monitor Tunnel
             tunnel_alive = _tunnel_proc is not None and _tunnel_proc.poll() is None
