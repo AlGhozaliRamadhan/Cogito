@@ -273,6 +273,7 @@ N_GPU_LAYERS   = int(os.environ.get("COGITO_GPU_LAYERS", "-1"))
 N_THREADS      = int(os.environ.get("COGITO_THREADS", "4"))
 DEFAULT_TOKENS = int(os.environ.get("COGITO_MAX_TOKENS", "512"))
 DEFAULT_RPM    = int(os.environ.get("COGITO_RPM", "30"))
+SSE_HEARTBEAT_SECS = float(os.environ.get("COGITO_SSE_HEARTBEAT", "2"))
 MODEL_ID       = Path(MODEL_PATH).stem
 
 llm = None
@@ -498,8 +499,16 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
             try:
                 yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':None}]})}\n\n"
                 yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':'<think>\n'},'finish_reason':None}]})}\n\n"
+                # SSE heartbeat: emit a comment line every SSE_HEARTBEAT_SECS so Cloudflare's
+                # idle upstream timer doesn't kill long <think> pauses. Comments (lines starting
+                # with ':') are part of SSE and ignored by clients, but count as data to proxies.
+                last_heartbeat = time.time()
                 try:
                     for chunk in llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop, stream=True):
+                        now = time.time()
+                        if now - last_heartbeat >= SSE_HEARTBEAT_SECS:
+                            yield ": heartbeat\n\n"
+                            last_heartbeat = now
                         txt = chunk["choices"][0]["text"]
                         tok += 1
                         yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':txt},'finish_reason':None}]})}\n\n"
@@ -536,7 +545,12 @@ def complete(body: CompReq, req: Request, kd=Depends(auth)):
         def gen():
             tok = 0
             try:
+                last_heartbeat = time.time()
                 for chunk in llm(body.prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, stop=stop, stream=True):
+                    now = time.time()
+                    if now - last_heartbeat >= SSE_HEARTBEAT_SECS:
+                        yield ": heartbeat\n\n"
+                        last_heartbeat = now
                     tok += 1
                     yield f"data: {json.dumps(chunk)}\n\n"
             except Exception: pass
