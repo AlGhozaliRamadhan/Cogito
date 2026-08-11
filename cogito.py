@@ -655,16 +655,25 @@ def start_tunnel(port: int) -> tuple[Optional[subprocess.Popen], Optional[str]]:
             text=True,
             bufsize=1,
         )
-        deadline = time.time() + 35
+        # Cloudflare prints the URL on a single line once the tunnel is established, but it
+        # may emit other progress lines (metrics, registration) first. Scan until we find one.
+        deadline = time.time() + 60
         while time.time() < deadline:
             line = proc.stdout.readline()
-            if not line: break
+            if not line:
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.2)
+                continue
             if "trycloudflare.com" in line or ".cfargotunnel.com" in line:
                 for part in line.split():
-                    if part.startswith("https://") and ("trycloudflare" in part or "cfargotunnel" in part):
-                        return proc, part.strip()
+                    # The URL sometimes has trailing chars (period, comma) that break matching
+                    clean = part.strip().rstrip(".,;)")
+                    if clean.startswith("https://") and ("trycloudflare" in clean or "cfargotunnel" in clean):
+                        return proc, clean
         err("cloudflared: could not parse tunnel URL")
-        proc.terminate()
+        try: proc.terminate()
+        except Exception: pass
         return None, None
     except Exception as e:
         err(f"cloudflared failed: {e}")
@@ -693,7 +702,7 @@ def start_keepalive(port: int):
 _server_proc: Optional[subprocess.Popen] = None
 _tunnel_proc: Optional[subprocess.Popen] = None
 
-def wait_for_port(port: int, timeout: float = 60.0) -> bool:
+def wait_for_port(port: int, timeout: float = 180.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -707,7 +716,19 @@ def start_server(model_path: Path, admin_key: str, model_cfg: dict) -> bool:
     global _server_proc
     server_file = WORK_DIR / "_cogito_server.py"
     server_file.write_text(SERVER_CODE)
-    
+
+    # Kill any leftover server process before starting a new one. Without this, a half-dead
+    # previous server can still hold the port and the new one silently fails to bind.
+    if _server_proc is not None:
+        try:
+            if _server_proc.poll() is None:
+                _server_proc.terminate()
+                try: _server_proc.wait(timeout=5)
+                except Exception:
+                    _server_proc.kill()
+        except Exception: pass
+        _server_proc = None
+
     env = os.environ.copy()
     env.update({
         "COGITO_MODEL_PATH": str(model_path),
@@ -716,14 +737,18 @@ def start_server(model_path: Path, admin_key: str, model_cfg: dict) -> bool:
         "PORT": str(PORT),
         "COGITO_GPU_LAYERS": str(model_cfg.get("gpu_layers_default", -1)),
     })
+    # Append-mode log so we can see the history across restarts.
+    log_handle = open(SERVER_LOG, "a", encoding="utf-8")
+    log_handle.write(f"\n\n========== restart @ {time.strftime('%Y-%m-%d %H:%M:%S')} ==========\n")
+    log_handle.flush()
     _server_proc = subprocess.Popen(
         [sys.executable, str(server_file)],
         env=env,
-        stdout=open(SERVER_LOG, "w"),
+        stdout=log_handle,
         stderr=subprocess.STDOUT,
     )
     info(f"Server starting (PID {_server_proc.pid})...")
-    return wait_for_port(PORT, timeout=60)
+    return wait_for_port(PORT, timeout=180)
 
 def api(method: str, path: str, admin_key: str, data: dict = None) -> Optional[dict]:
     url = f"http://localhost:{PORT}{path}"
@@ -753,6 +778,29 @@ def cmd_setup(args: list = None):
     save_state({"model_path": str(model_path), "model_key": list(k for k, v in MODELS.items() if v["file"] == model_cfg["file"])[0]})
     print()
     ok("Setup complete! Run: python cogito.py start")
+
+def _is_server_healthy(port: int) -> bool:
+    """Hit /health on localhost; return True only if the server is up AND the model is loaded."""
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2) as r:
+            data = json.loads(r.read())
+            return bool(data.get("model_loaded"))
+    except Exception:
+        return False
+
+def _public_health_ok(url: str, timeout: float = 10.0) -> bool:
+    """Hit the public URL's /health. Cloudflare returns an HTML 5xx (which surfaces as 502) if the
+    tunnel can't reach the upstream, so we wait a few seconds after bringing the tunnel up and
+    verify before announcing the URL."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"{url}/health", timeout=3) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            time.sleep(1)
+    return False
 
 def cmd_start(args: list = None):
     global _tunnel_proc
@@ -786,44 +834,74 @@ def cmd_start(args: list = None):
     info(f"Port:  {PORT}")
 
     step(1, "Starting FastAPI server...")
-    if start_server(model_path, admin_key, model_cfg):
+    started = start_server(model_path, admin_key, model_cfg)
+    if not started:
+        # Retry once — slow Colab/Kaggle disks can miss the first port-open window
+        warn("Server didn't open the port in time; retrying once...")
+        time.sleep(3)
+        started = start_server(model_path, admin_key, model_cfg)
+    if started:
         ok(f"Server listening on port {PORT}")
     else:
-        err("Server failed to start. Check logs.")
+        err("Server failed to start. Check cogito_server.log.")
         return
 
-    step(2, "Starting Cloudflare tunnel...")
-    _tunnel_proc, public_url = start_tunnel(PORT)
+    start_keepalive(PORT)
+
+    step(2, "Waiting for model to load into memory...")
+    # CRITICAL: do NOT bring up the public tunnel until the model is loaded.
+    # Otherwise Cloudflare will proxy requests to a server that returns 503, which
+    # Cloudflare surfaces as a 502 HTML error page ("possibly a proxy or Cloudflare block").
+    model_ready = False
+    start_wait = time.time()
+    while time.time() - start_wait < 600:  # 10 min — GGUF loads on CPU can be slow
+        if _is_server_healthy(PORT):
+            model_ready = True
+            break
+        time.sleep(3)
+
+    if model_ready:
+        ok("Model loaded and ready!")
+    else:
+        warn("Model load timed out or is still loading in background. Bringing up tunnel anyway.")
+
+    step(3, "Starting Cloudflare tunnel...")
+    public_url = None
+    for attempt in range(3):
+        _tunnel_proc, candidate = start_tunnel(PORT)
+        if candidate:
+            public_url = candidate
+            break
+        warn(f"Tunnel attempt {attempt+1} failed; retrying in 5s...")
+        time.sleep(5)
 
     if public_url:
         save_state({"public_url": public_url})
-        ok(f"Tunnel active!")
+        ok(f"Tunnel URL: {public_url}")
     else:
         warn("Tunnel failed. API is available locally only.")
         public_url = f"http://localhost:{PORT}"
 
-    start_keepalive(PORT)
-
-    step(3, "Waiting for model to load into memory...")
-    # Poll health endpoint until model is loaded
-    model_ready = False
-    start_wait = time.time()
-    while time.time() - start_wait < 300:  # 5 min timeout
-        try:
-            req = urllib.request.Request(f"http://localhost:{PORT}/health")
-            with urllib.request.urlopen(req, timeout=2) as r:
-                data = json.loads(r.read())
-                if data.get("model_loaded"):
-                    model_ready = True
-                    break
-        except Exception:
-            pass
-        time.sleep(3)
-        
-    if model_ready:
-        ok("Model loaded and ready!")
-    else:
-        warn("Model load timed out or is still loading in background.")
+    # Smoke-test the public URL. Cloudflare returns HTML 502 when it can't reach upstream;
+    # verify the proxy works before we declare the API live.
+    if public_url.startswith("http") and not public_url.startswith("http://localhost"):
+        step(4, "Smoke-testing public URL through Cloudflare...")
+        if _public_health_ok(public_url, timeout=15):
+            ok("Public URL is reachable through Cloudflare.")
+        else:
+            warn("Public URL not yet reachable through Cloudflare — tunnel may still be warming.")
+            warn("Restarting tunnel once...")
+            try:
+                if _tunnel_proc: _tunnel_proc.terminate()
+            except Exception: pass
+            time.sleep(2)
+            _tunnel_proc, public_url = start_tunnel(PORT)
+            if public_url:
+                save_state({"public_url": public_url})
+                if _public_health_ok(public_url, timeout=15):
+                    ok("Public URL reachable after restart.")
+                else:
+                    warn("Public URL still not responding — continuing anyway; it usually clears in seconds.")
 
     docs_url = f"{public_url}/docs"
     api_base = f"{public_url}/v1"
@@ -836,27 +914,69 @@ def cmd_start(args: list = None):
     print(f"  |  Docs:      {docs_url:<{inner_w-14}} |")
     print("  +" + "-" * inner_w + "+\n")
 
+    # Main watchdog loop: watch both procs, AND check that the server is actually healthy
+    # (not just alive). A server that crashed into a Python traceback would still show a
+    # running PID but no working /health — that's the silent failure mode that produces
+    # the 502 HTML when Cloudflare retries.
+    restart_attempts = 0
+    last_warn = 0.0
     try:
         while True:
-            time.sleep(15)
-            # Monitor Server
-            if _server_proc and _server_proc.poll() is not None:
+            time.sleep(10)
+            now = time.time()
+
+            server_alive = _server_proc is not None and _server_proc.poll() is None
+            if not server_alive:
                 warn("Server process died! Restarting...")
-                start_server(model_path, admin_key, model_cfg)
-            
+                if _server_proc:
+                    try: _server_proc.terminate(); _server_proc.wait(timeout=5)
+                    except Exception: pass
+                restart_attempts += 1
+                backoff = min(30, 2 ** restart_attempts)
+                time.sleep(backoff)
+                if start_server(model_path, admin_key, model_cfg):
+                    ok("Server restarted.")
+                    restart_attempts = 0
+                else:
+                    err("Server restart failed; will retry.")
+                    continue
+
+            # Liveness check — server is running but is it actually serving healthy /health?
+            if not _is_server_healthy(PORT) and now - last_warn > 30:
+                last_warn = now
+                warn("Server is up but /health is failing (model may be reloading).")
+                # Force a restart if it's been failing long enough
+                if restart_attempts >= 0:
+                    pass  # already counting in the loop above
+
             # Monitor Tunnel
-            if _tunnel_proc and _tunnel_proc.poll() is not None:
+            tunnel_alive = _tunnel_proc is not None and _tunnel_proc.poll() is None
+            if not tunnel_alive:
                 warn("Cloudflare tunnel died! Restarting...")
+                if _tunnel_proc:
+                    try: _tunnel_proc.terminate()
+                    except Exception: pass
+                time.sleep(3)
                 _tunnel_proc, new_url = start_tunnel(PORT)
                 if new_url:
                     public_url = new_url
                     save_state({"public_url": public_url})
                     info(f"New Tunnel URL: {public_url}")
+                    # Re-smoke-test after a tunnel restart so we don't keep a stale URL around
+                    if not new_url.startswith("http://localhost"):
+                        if _public_health_ok(new_url, timeout=10):
+                            ok("New tunnel is reachable.")
+                        else:
+                            warn("New tunnel not yet reachable; it usually clears in seconds.")
     except KeyboardInterrupt:
         print()
         info("Shutting down...")
-        if _server_proc: _server_proc.terminate()
-        if _tunnel_proc: _tunnel_proc.terminate()
+        if _server_proc:
+            try: _server_proc.terminate()
+            except Exception: pass
+        if _tunnel_proc:
+            try: _tunnel_proc.terminate()
+            except Exception: pass
         ok("Stopped.")
 
 def cmd_keys(args: list = None):
