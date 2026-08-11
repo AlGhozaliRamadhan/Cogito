@@ -63,6 +63,7 @@ KEYS_FILE  = WORK_DIR / "cogito_keys.json"
 SERVER_LOG = WORK_DIR / "cogito_server.log"
 STATE_FILE = WORK_DIR / ".cogito_state.json"
 PORT       = int(os.environ.get("COGITO_PORT", "8000"))
+QUIET      = os.environ.get("COGITO_QUIET", "").lower() in ("1", "true", "yes")
 
 MODELS = {
     "q4_k_m": {
@@ -272,7 +273,6 @@ N_GPU_LAYERS   = int(os.environ.get("COGITO_GPU_LAYERS", "-1"))
 N_THREADS      = int(os.environ.get("COGITO_THREADS", "4"))
 DEFAULT_TOKENS = int(os.environ.get("COGITO_MAX_TOKENS", "512"))
 DEFAULT_RPM    = int(os.environ.get("COGITO_RPM", "30"))
-QUIET          = os.environ.get("COGITO_QUIET", "").lower() in ("1", "true", "yes")
 MODEL_ID       = Path(MODEL_PATH).stem
 
 llm = None
