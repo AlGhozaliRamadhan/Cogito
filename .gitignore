@@ -1,51 +1,84 @@
-# ─── Model Files ──────────────────────────────────────────────────────────────
+# ─── Model Weights & Cache ───────────────────────────────────────────────────
+models/
+*.safetensors
 *.gguf
 *.bin
-*.safetensors
-models/
+*.pt
+*.pth
+*.onnx
+.cache/
 
-# ─── API Keys (never commit!) ─────────────────────────────────────────────────
+# ─── Credentials & Secrets (Never Commit!) ───────────────────────────────────
+cogito_keys.json
 api_keys.json
 *.keys.json
 .env
 .env.*
 
-# ─── Logs ────────────────────────────────────────────────────────────────────
+# ─── Runtime State & Logs ─────────────────────────────────────────────────────
+.cogito_state.json
+*.state.json
+*.tmp
+*.tmp.*
 *.log
+cogito_server.log
 logs/
+_cogito_server.py
 
-# ─── Python ──────────────────────────────────────────────────────────────────
+# ─── Python Artifacts ─────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
-*.egg-info/
-dist/
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
 .eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
 *.egg
+MANIFEST
+pip-wheel-metadata/
+
+# ─── Virtual Environments ─────────────────────────────────────────────────────
 venv/
 .venv/
 env/
 .env/
-pip-wheel-metadata/
+ENV/
 
-# ─── Jupyter ─────────────────────────────────────────────────────────────────
+# ─── Testing & Coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# ─── Notebooks & IDEs ─────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 */.ipynb_checkpoints/
-
-# ─── OS ──────────────────────────────────────────────────────────────────────
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ─── IDE ─────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+.claude/
+.claude/*
 
-# ─── Temp ─────────────────────────────────────────────────────────────────────
+# ─── OS Artifacts ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
 /tmp/
-*.tmp

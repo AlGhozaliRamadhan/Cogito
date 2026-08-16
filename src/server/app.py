@@ -1,0 +1,134 @@
+"""
+FastAPI Application Factory & Lifecycle
+"""
+
+import logging
+import threading
+from pathlib import Path
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+import uvicorn
+
+from src.config import settings
+from src.core.engine import InferenceEngine
+from src.core.key_manager import APIKeyManager
+from src.server.routes.health import router as health_router
+from src.server.routes.models import router as models_router
+from src.server.routes.chat import router as chat_router
+from src.server.routes.completions import router as completions_router
+from src.server.routes.admin import router as admin_router
+
+logger = logging.getLogger("cogito-app")
+
+def create_app(
+    engine: InferenceEngine = None,
+    key_manager: APIKeyManager = None,
+    auto_load_model: bool = True
+) -> FastAPI:
+    if engine is None:
+        engine = InferenceEngine(
+            model_path=settings.model_path,
+            quant_mode=settings.quant_mode,
+            trust_remote_code=settings.trust_remote_code
+        )
+
+    if key_manager is None:
+        key_manager = APIKeyManager(
+            keys_file=settings.keys_file,
+            admin_key=settings.admin_key
+        )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if auto_load_model and Path(settings.model_path).exists():
+            threading.Thread(target=engine.load, daemon=True).start()
+        else:
+            logger.warning(f"Model path {settings.model_path} does not exist. Awaiting download.")
+        yield
+
+    app = FastAPI(
+        title="Cogito-0.9.1-15B API",
+        description="Production OpenAI-Compatible REST API for Cogito-0.9.1-15B Safetensors model",
+        version="1.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
+        lifespan=lifespan,
+    )
+
+    app.state.engine = engine
+    app.state.key_manager = key_manager
+    app.state.start_time = datetime.now(timezone.utc)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        error_type = "invalid_request_error"
+        if exc.status_code == 401:
+            error_type = "authentication_error"
+        elif exc.status_code == 403:
+            error_type = "permission_error"
+        elif exc.status_code == 429:
+            error_type = "rate_limit_error"
+        elif exc.status_code >= 500:
+            error_type = "server_error"
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "message": exc.detail,
+                    "type": error_type,
+                    "param": None,
+                    "code": exc.status_code,
+                }
+            },
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        errors = exc.errors()
+        msg = "; ".join(f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in errors)
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "error": {
+                    "message": f"Invalid request body: {msg}",
+                    "type": "invalid_request_error",
+                    "param": errors[0]["loc"][-1] if errors and errors[0]["loc"] else None,
+                    "code": 422,
+                }
+            },
+        )
+
+    app.include_router(health_router)
+    app.include_router(models_router)
+    app.include_router(chat_router)
+    app.include_router(completions_router)
+    app.include_router(admin_router)
+
+    return app
+
+def run():
+    app = create_app()
+    logger.info(f"Starting Cogito API Server on port {settings.port}")
+    logger.info(f"Admin Key: {settings.admin_key[:8]}...{settings.admin_key[-4:]}")
+    logger.info(f"Model Path: {settings.model_path}")
+    uvicorn.run(app, host="0.0.0.0", port=settings.port, log_level="info")
+
+if __name__ == "__main__":
+    run()

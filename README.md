@@ -1,41 +1,38 @@
 # Cogito-0.9.1-15B API
 
 Self-hosted, OpenAI-compatible REST API for [Cogito-0.9.1-15B](https://huggingface.co/ozaa77/Cogito-0.9.1-15B) (Safetensors).
-Runs on Kaggle or Google Colab. Free Cloudflare tunnel — no account, no token required.
+Runs on Kaggle, Google Colab, or local Linux/Windows systems. Automatic Cloudflare tunnel included -- no account or token required.
 
 ---
 
 ## Run
 
 Paste the corresponding cell into your Kaggle or Colab notebook and run it.
-It always pulls the latest version of `cogito.py` from this repo before starting.
+It pulls the latest version from this repository before starting.
 
 ### For Kaggle
 
 ```python
 import os
 
-# 1. Always start from the base Kaggle working directory
+# 1. Start from base Kaggle working directory
 %cd /kaggle/working
 
-# 2. Clone if it doesn't exist, otherwise force-pull the latest changes
+# 2. Clone or pull latest
 if not os.path.exists("Cogito"):
     print("Repository not found. Cloning...")
     !git clone https://github.com/AlGhozaliRamadhan/Cogito.git
 else:
     print("Repository found. Checking for updates...")
     %cd /kaggle/working/Cogito
-    # Stash any local accidental changes, pull latest, and clear stash
     !git stash
     !git pull origin main
     !git stash drop
     %cd /kaggle/working
 
-# 3. Enter the directory for setup
+# 3. Enter directory and launch
 %cd /kaggle/working/Cogito
-
-# 4. Install dependencies and start the server
-!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken
+!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken pytest pytest-asyncio httpx
 !python cogito.py start
 ```
 
@@ -44,33 +41,30 @@ else:
 ```python
 import os
 
-# 1. Always start from the base Colab working directory
+# 1. Start from base Colab working directory
 %cd /content
 
-# 2. Clone if it doesn't exist, otherwise force-pull the latest changes
+# 2. Clone or pull latest
 if not os.path.exists("Cogito"):
     print("Repository not found. Cloning...")
     !git clone https://github.com/AlGhozaliRamadhan/Cogito.git
 else:
     print("Repository found. Checking for updates...")
     %cd /content/Cogito
-    # Stash any local accidental changes, pull latest, and clear stash
     !git stash
     !git pull origin main
     !git stash drop
     %cd /content
 
-# 3. Enter the directory for setup
+# 3. Enter directory and launch
 %cd /content/Cogito
-
-# 4. Install dependencies and start the server
-!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken
+!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken pytest pytest-asyncio httpx
 !python cogito.py start
 ```
 
 When the server is ready you will see:
 
-```
+```text
   +----------------------------------------------------------+
   |  Cogito-0.9.1-15B API is LIVE                            |
   |  URL:       https://xxxx.trycloudflare.com               |
@@ -79,34 +73,46 @@ When the server is ready you will see:
   +----------------------------------------------------------+
 ```
 
-The cell keeps the server running. Open a second cell for key management or testing.
+---
+
+## CLI Commands
+
+Run these commands in a terminal or separate notebook cells:
+
+```bash
+# Manage API keys
+python cogito.py keys
+
+# Show current URL, admin key, model status, and uptime
+python cogito.py status
+
+# Run setup (download model and configure profile)
+python cogito.py setup
+python cogito.py setup 4bit
+python cogito.py setup 8bit
+python cogito.py setup 16bit
+
+# Start server and Cloudflare tunnel
+python cogito.py start
+```
 
 ---
 
-## Other commands (run in separate cells)
+## Running the Automated Test Suite
 
-```python
-# Create, list, and revoke API keys
-!python cogito.py keys
-```
+Run the full pytest suite:
 
-```python
-# Send a test prompt and stream the response
-!python cogito.py test
-```
-
-```python
-# Show current URL, admin key, model status, uptime
-!python cogito.py status
+```bash
+pytest -v
 ```
 
 ---
 
 ## Using the API
 
-The API is fully OpenAI-compatible. Change `base_url` in any existing client and it works.
+The API is fully OpenAI-compatible. Set the base URL in any standard client.
 
-### curl
+### cURL
 
 ```bash
 curl -X POST "https://YOURS.trycloudflare.com/v1/chat/completions" \
@@ -115,7 +121,7 @@ curl -X POST "https://YOURS.trycloudflare.com/v1/chat/completions" \
   -d '{"model":"Cogito-0.9.1-15B","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
 ```
 
-### Python
+### Python (Requests)
 
 ```python
 import requests
@@ -133,7 +139,7 @@ r = requests.post(
 print(r.json()["choices"][0]["message"]["content"])
 ```
 
-### OpenAI SDK
+### OpenAI Python SDK
 
 ```python
 from openai import OpenAI
@@ -179,22 +185,6 @@ curl -X POST "https://YOURS.trycloudflare.com/v1/admin/keys/create" \
   -d '{"name": "my-app", "role": "user", "rpm": 20}'
 ```
 
-Response:
-
-```json
-{
-  "success": true,
-  "key": {
-    "key": "cg-aBcDeFgH...",
-    "name": "my-app",
-    "role": "user",
-    "rpm": 20,
-    "reqs": 0,
-    "active": true
-  }
-}
-```
-
 ### List keys
 
 ```bash
@@ -233,79 +223,50 @@ curl "https://YOURS.trycloudflare.com/v1/admin/stats" \
 | POST | `/v1/admin/keys/create` | Admin | Create API key |
 | GET | `/v1/admin/keys/list` | Admin | List all keys |
 | POST | `/v1/admin/keys/revoke` | Admin | Revoke a key |
+| DELETE | `/v1/admin/keys/{key}` | Admin | Delete a key |
 | GET | `/v1/admin/stats` | Admin | Usage statistics |
 | GET | `/docs` | None | Swagger UI |
 
 ---
 
-## Rate limiting
+## Rate Limiting
 
-Each API key has its own rate limit in requests per minute. Exceeding it returns HTTP 429.
+Each API key has its own sliding-window rate limit in requests per minute (RPM). Exceeding it returns HTTP 429.
 
 | Role | Default RPM |
 |---|---|
 | user | 30 |
 | admin | unlimited |
 
-Set a custom limit when creating a key: `"rpm": 120`
-
 ---
 
-## Tunnel
+## Models and Quantization
 
-Uses Cloudflare Quick Tunnel (`trycloudflare.com`). Completely free, no account needed.
-The binary is downloaded automatically. The URL is random and changes each session.
-Existing API keys keep working — only the base URL needs updating.
-
----
-
-## Models & Quantization
-
-The model is loaded from [ozaa77/Cogito-0.9.1-15B](https://huggingface.co/ozaa77/Cogito-0.9.1-15B) in **safetensors** format.
+The model is loaded from [ozaa77/Cogito-0.9.1-15B](https://huggingface.co/ozaa77/Cogito-0.9.1-15B) in safetensors format.
 
 | Profile | Format | Target VRAM | Notes |
 |---|---|---|---|
-| `auto` (default) | Safetensors | Auto | Auto-detects VRAM & applies 4-bit NF4 if VRAM < 28GB |
+| `auto` (default) | Safetensors | Auto | Auto-detects VRAM and applies 4-bit NF4 if VRAM < 28GB |
 | `4bit` | Safetensors (NF4) | ~9 GB VRAM | Fits single 15-16GB GPU (Kaggle/Colab T4/P100) |
-| `8bit` | Safetensors (Int8) | ~15 GB VRAM | Balanced quality & speed |
+| `8bit` | Safetensors (Int8) | ~15 GB VRAM | Balanced quality and speed |
 | `16bit` | Safetensors (FP16/BF16) | ~30 GB VRAM | Full precision (Multi-GPU 2xT4 / A100) |
 
 ---
 
-## CLI reference
+## Repository Structure
 
-```
-python cogito.py              interactive menu
-python cogito.py setup        install deps and download model (auto profile)
-python cogito.py setup 4bit   skip prompt, download & configure 4-bit NF4 profile
-python cogito.py setup 8bit   skip prompt, download & configure 8-bit profile
-python cogito.py setup 16bit  skip prompt, download & configure full precision profile
-python cogito.py start        start server and tunnel
-python cogito.py keys         create, list, revoke keys
-python cogito.py test         send a test prompt
-python cogito.py status       show URL, keys, health
-```
-
----
-
-## Session limits
-
-| Platform | GPU | Max session |
-|---|---|---|
-| Kaggle | T4 x2, free | 12h (GPU) / 9h (CPU) |
-| Google Colab | T4, free tier | ~4h free, 12h Pro |
-
-To keep API keys between sessions, download `cogito_keys.json` before the session ends and upload it at the start of the next one.
-
----
-
-## Repo structure
-
-```
+```text
 Cogito/
-├── cogito.py          all-in-one: CLI, embedded server, tunnel manager
-├── server/
-│   ├── api_server.py  standalone FastAPI server
-│   └── requirements.txt
+├── src/
+│   ├── config.py              configuration and environment detection
+│   ├── cli.py                 CLI command management
+│   ├── core/                  inference engine, prompt builder, stop criteria, key manager
+│   ├── server/                FastAPI application factory, routers, schemas, auth
+│   ├── tunnel/                Cloudflare tunnel management
+│   └── supervisor/            keepalive and watchdog supervision
+├── tests/                     comprehensive pytest test suite
+├── requirements.txt           pinned server and testing dependencies
+├── cogito.py                  CLI and notebook runner
 └── README.md
 ```
+
