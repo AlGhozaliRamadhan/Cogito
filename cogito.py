@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Cogito-0.9 API Manager
+Cogito-0.9.1-15B API Manager
 One script to rule them all: setup -> serve -> tunnel -> keys
+Serves Hugging Face safetensors model: ozaa77/Cogito-0.9.1-15B
 
 Usage (paste in Kaggle/Colab cell, or run locally):
     python cogito.py            -> interactive menu (if tty)
@@ -28,6 +29,7 @@ def detect_env() -> dict:
         "is_colab": False,
         "is_gpu": False,
         "gpu_name": None,
+        "gpu_count": 0,
         "work_dir": str(Path.cwd()),
         "model_dir": str(Path.cwd() / "models"),
     }
@@ -49,8 +51,10 @@ def detect_env() -> dict:
             capture_output=True, text=True, timeout=5,
         )
         if r.returncode == 0 and r.stdout.strip():
+            lines = [line.strip() for line in r.stdout.strip().split("\n") if line.strip()]
             env["is_gpu"] = True
-            env["gpu_name"] = r.stdout.strip().split("\n")[0].split(",")[0].strip()
+            env["gpu_count"] = len(lines)
+            env["gpu_name"] = lines[0].split(",")[0].strip()
     except Exception:
         pass
 
@@ -65,33 +69,39 @@ STATE_FILE = WORK_DIR / ".cogito_state.json"
 PORT       = int(os.environ.get("COGITO_PORT", "8000"))
 QUIET      = os.environ.get("COGITO_QUIET", "").lower() in ("1", "true", "yes")
 
+HF_REPO = "ozaa77/Cogito-0.9.1-15B"
+MODEL_NAME = "Cogito-0.9.1-15B"
+
 MODELS = {
-    "q4_k_m": {
-        "file": "cogito-0.9-q4_k_m.gguf",
-        "size": "~5 GB",
-        "description": "Q4_K_M (Faster, lower VRAM, good quality)",
-        "gpu_layers_default": -1,
+    "auto": {
+        "name": "Cogito-0.9.1-15B",
+        "dir": "Cogito-0.9.1-15B",
+        "size": "~30 GB (safetensors)",
+        "description": "Cogito-0.9.1-15B (Auto VRAM / quantization detection)",
+        "quant": "auto",
     },
-    "q5_0": {
-        "file": "cogito-0.9-q5_0.gguf",
-        "size": "~5.5 GB",
-        "description": "Q5_0 (Good balance of speed and quality)",
-        "gpu_layers_default": -1,
+    "4bit": {
+        "name": "Cogito-0.9.1-15B-4bit",
+        "dir": "Cogito-0.9.1-15B",
+        "size": "~9 GB VRAM (NF4)",
+        "description": "Cogito-0.9.1-15B 4-bit NF4 (Fits single 15-16GB GPU like T4/P100)",
+        "quant": "4bit",
     },
-    "q5_k_m": {
-        "file": "cogito-0.9-q5_k_m.gguf",
-        "size": "~6 GB",
-        "description": "Q5_K_M (Excellent quality, moderate VRAM)",
-        "gpu_layers_default": -1,
+    "8bit": {
+        "name": "Cogito-0.9.1-15B-8bit",
+        "dir": "Cogito-0.9.1-15B",
+        "size": "~15 GB VRAM",
+        "description": "Cogito-0.9.1-15B 8-bit (Balanced speed and precision)",
+        "quant": "8bit",
     },
-    "q8_0": {
-        "file": "cogito-0.9-q8_0.gguf",
-        "size": "~9 GB",
-        "description": "Q8_0 (Best quality, needs more VRAM)",
-        "gpu_layers_default": -1,
+    "16bit": {
+        "name": "Cogito-0.9.1-15B-fp16",
+        "dir": "Cogito-0.9.1-15B",
+        "size": "~30 GB VRAM",
+        "description": "Cogito-0.9.1-15B Full Precision (Multi-GPU 2xT4 or A100)",
+        "quant": "16bit",
     },
 }
-HF_REPO = "ozaa77/Cogito-0.9"
 
 # ------------------------------------------------------------------------------
 # UI UTILS
@@ -108,9 +118,10 @@ def step(n, msg): print(f"\n[{n}] {msg}")
 def rule():       print("-" * 60)
 
 def print_banner():
-    env_label = f"{ENV['name']} - {'GPU ' + ENV['gpu_name'] if ENV['is_gpu'] else 'CPU'}"
+    gpu_info = f"GPU ({ENV['gpu_count']}x {ENV['gpu_name']})" if ENV['is_gpu'] else "CPU"
+    env_label = f"{ENV['name']} - {gpu_info}"
     print("\n============================================================")
-    print(" Cogito-0.9 API Manager")
+    print(f" {MODEL_NAME} API Manager (Safetensors)")
     print(f" Environment: {env_label}")
     print("============================================================\n")
 
@@ -149,35 +160,24 @@ def run_pip(packages: list, extra_args: list = None, env_vars: dict = None):
 
 def install_deps():
     header("Installing Dependencies")
-    step(1, "Core packages (fastapi, uvicorn, huggingface_hub)")
+    step(1, "Core server packages (fastapi, uvicorn, huggingface_hub, etc.)")
     ok_1 = run_pip(["fastapi", "uvicorn[standard]", "python-multipart", "huggingface_hub", "pydantic", "requests"])
     if ok_1:
         ok("Core packages installed")
     else:
         warn("Some core packages may have failed - continuing")
 
-    step(2, "llama-cpp-python")
+    step(2, "Inference engine (transformers, accelerate, safetensors, bitsandbytes, torch)")
+    packages = ["transformers>=4.40.0", "accelerate>=0.28.0", "safetensors>=0.4.0", "sentencepiece", "tiktoken"]
     if ENV["is_gpu"]:
-        info("GPU detected -> trying CUDA-enabled wheel...")
-        ok_llama = run_pip(
-            ["llama-cpp-python"],
-            extra_args=["--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cu121"],
-        )
-        if not ok_llama:
-            info("Pre-built wheel unavailable -> compiling from source (may take 3-5 min)...")
-            ok_llama = run_pip(
-                ["llama-cpp-python", "--force-reinstall", "--no-cache-dir"],
-                env_vars={"CMAKE_ARGS": "-DGGML_CUDA=on"},
-            )
-    else:
-        info("No GPU -> installing CPU build...")
-        ok_llama = run_pip(["llama-cpp-python"])
+        info("GPU detected -> including bitsandbytes for quantization...")
+        packages.append("bitsandbytes")
 
-    if ok_llama:
-        ok("llama-cpp-python installed")
+    ok_infer = run_pip(packages)
+    if ok_infer:
+        ok("Inference packages installed")
     else:
-        err("llama-cpp-python install failed")
-        print("  Try manually: pip install llama-cpp-python")
+        warn("Some inference packages had issues during install - continuing")
 
     ok("Dependencies ready")
 
@@ -186,73 +186,62 @@ def install_deps():
 # ------------------------------------------------------------------------------
 
 def choose_model(auto: Optional[str] = None) -> dict:
-    key = auto if auto and auto in MODELS else "q4_k_m"
-    info(f"Auto-selected model: {MODELS[key]['description']}")
+    key = auto if auto and auto in MODELS else "auto"
+    info(f"Selected profile: {MODELS[key]['description']}")
     save_state({"model_key": key})
     return MODELS[key]
 
 def download_model(model: dict) -> Path:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    dest = MODEL_DIR / model["file"]
+    dest_dir = MODEL_DIR / model.get("dir", "Cogito-0.9.1-15B")
 
-    if dest.exists():
-        size_gb = dest.stat().st_size / 1e9
-        ok(f"Model already present: {dest.name} ({size_gb:.2f} GB)")
-        return dest
+    # Check if model files already exist locally (safetensors shards and config)
+    if dest_dir.exists():
+        safetensor_files = list(dest_dir.glob("*.safetensors"))
+        config_file = dest_dir / "config.json"
+        if config_file.exists() and len(safetensor_files) > 0:
+            total_size_gb = sum(f.stat().st_size for f in dest_dir.rglob("*") if f.is_file()) / 1e9
+            ok(f"Model already present: {dest_dir.name} ({total_size_gb:.2f} GB across {len(safetensor_files)} shards)")
+            return dest_dir
 
-    header("Downloading Model")
-    info(f"File: {model['file']}")
-    info(f"Size: {model['size']}")
-    info(f"Repo: {HF_REPO}")
+    header(f"Downloading {MODEL_NAME} Safetensors Model")
+    info(f"Destination: {dest_dir}")
+    info(f"Repository:  {HF_REPO}")
+    info(f"Format:      Safetensors (multi-shard)")
 
     try:
-        from huggingface_hub import hf_hub_download
-        info("Downloading via huggingface_hub...")
+        from huggingface_hub import snapshot_download
+        info("Downloading model snapshot via huggingface_hub (resumable)...")
         kwargs = {
             "repo_id": HF_REPO,
-            "filename": model["file"],
-            "local_dir": str(MODEL_DIR)
+            "local_dir": str(dest_dir),
+            "local_dir_use_symlinks": False,
         }
         hf_token = os.environ.get("HF_TOKEN")
         if hf_token:
             info("Using HF_TOKEN from environment.")
             kwargs["token"] = hf_token
         else:
-            info("No HF_TOKEN found in environment. Downloading unauthenticated.")
+            info("No HF_TOKEN found in environment. Downloading public repository.")
 
-        path = hf_hub_download(**kwargs)
-        size_gb = Path(path).stat().st_size / 1e9
-        ok(f"Downloaded: {Path(path).name} ({size_gb:.2f} GB)")
+        path = snapshot_download(**kwargs)
+        total_size_gb = sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e9
+        ok(f"Downloaded model snapshot to: {Path(path).name} ({total_size_gb:.2f} GB)")
         return Path(path)
     except Exception as e:
-        warn(f"huggingface_hub failed ({e}), trying wget/curl...")
-
-    url = f"https://huggingface.co/{HF_REPO}/resolve/main/{model['file']}"
-    downloader = shutil.which("wget") or shutil.which("curl")
-    if downloader:
-        if "wget" in downloader:
-            cmd = ["wget", "-q", "--show-progress", "-O", str(dest), url]
-        else:
-            cmd = ["curl", "-L", "--progress-bar", "-o", str(dest), url]
-        info(f"Downloading via {Path(downloader).name}...")
-        r = subprocess.run(cmd)
-        if r.returncode == 0 and dest.exists():
-            ok(f"Downloaded via {Path(downloader).name}")
-            return dest
-
-    err("All download methods failed. Please download manually:")
-    print(f"     URL: {url}")
-    print(f"     Save to: {dest}")
-    sys.exit(1)
+        err(f"huggingface snapshot_download failed: {e}")
+        print(f"  Please download the repository manually from https://huggingface.co/{HF_REPO}")
+        print(f"  and place the files inside: {dest_dir}")
+        sys.exit(1)
 
 # ------------------------------------------------------------------------------
 # API SERVER (embedded)
 # ------------------------------------------------------------------------------
 
-SERVER_CODE = r'''"""Cogito-0.9 FastAPI Server"""
+SERVER_CODE = r'''"""Cogito-0.9.1-15B FastAPI Server (Safetensors)"""
 import os, sys, json, time, uuid, secrets, logging, threading
 from datetime import datetime
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Any
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -268,18 +257,19 @@ log = logging.getLogger("cogito")
 MODEL_PATH     = os.environ["COGITO_MODEL_PATH"]
 ADMIN_KEY      = os.environ["COGITO_ADMIN_KEY"]
 KEYS_FILE      = os.environ.get("COGITO_KEYS_FILE", "/tmp/cogito_keys.json")
+QUANT_MODE     = os.environ.get("COGITO_QUANT", "auto").lower()
 MAX_CTX        = int(os.environ.get("COGITO_CTX", "8192"))
-N_GPU_LAYERS   = int(os.environ.get("COGITO_GPU_LAYERS", "-1"))
-N_THREADS      = int(os.environ.get("COGITO_THREADS", "4"))
 DEFAULT_TOKENS = int(os.environ.get("COGITO_MAX_TOKENS", "512"))
 DEFAULT_RPM    = int(os.environ.get("COGITO_RPM", "30"))
 SSE_HEARTBEAT_SECS = float(os.environ.get("COGITO_SSE_HEARTBEAT", "5"))
-MODEL_ID       = Path(MODEL_PATH).stem
+MODEL_ID       = "Cogito-0.9.1-15B"
 
-llm = None
+model = None
+tokenizer = None
 model_loaded   = False
 model_loading  = False
 start_time     = datetime.utcnow()
+model_lock     = threading.Lock()
 
 class KeyManager:
     def __init__(self):
@@ -417,21 +407,82 @@ class KeyReq(BaseModel):
 class RevokeReq(BaseModel):
     key: str
 
-app = FastAPI(title="Cogito-0.9 API", version="1.0.0")
+app = FastAPI(title="Cogito-0.9.1-15B API", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 def load_model():
-    global llm, model_loaded, model_loading
+    global model, tokenizer, model_loaded, model_loading
     model_loading = True
-    log.info(f"Loading model: {MODEL_PATH}")
+    log.info(f"Loading Cogito-0.9.1-15B safetensor model from: {MODEL_PATH}")
     try:
-        from llama_cpp import Llama
-        llm = Llama(model_path=MODEL_PATH, n_ctx=MAX_CTX, n_gpu_layers=N_GPU_LAYERS, n_threads=N_THREADS, verbose=False)
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_PATH,
+            trust_remote_code=True,
+            local_files_only=Path(MODEL_PATH).exists() and (Path(MODEL_PATH) / "tokenizer.json").exists(),
+        )
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        load_kwargs = {
+            "trust_remote_code": True,
+            "low_cpu_mem_usage": True,
+        }
+
+        has_cuda = torch.cuda.is_available()
+        if has_cuda:
+            load_kwargs["device_map"] = "auto"
+            gpu_count = torch.cuda.device_count()
+            total_vram_gb = sum(torch.cuda.get_device_properties(i).total_memory for i in range(gpu_count)) / (1024**3)
+            compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            log.info(f"CUDA detected: {gpu_count} GPU(s), {total_vram_gb:.1f} GB total VRAM. Target dtype: {compute_dtype}")
+
+            if QUANT_MODE in ("4bit", "4-bit", "q4", "bnb4"):
+                log.info("Loading in 4-bit NF4 quantization...")
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+            elif QUANT_MODE in ("8bit", "8-bit", "q8", "bnb8"):
+                log.info("Loading in 8-bit quantization...")
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            elif QUANT_MODE in ("16bit", "fp16", "bf16", "none"):
+                log.info(f"Loading in full precision ({compute_dtype})...")
+                load_kwargs["torch_dtype"] = compute_dtype
+            else:
+                # Auto mode: if VRAM < 28 GB, default to 4bit so it fits on 15-16GB GPUs
+                if total_vram_gb < 28:
+                    log.info(f"Total VRAM ({total_vram_gb:.1f}GB) < 28GB -> Auto-enabling 4-bit NF4 quantization")
+                    try:
+                        import bitsandbytes
+                        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_compute_dtype=compute_dtype,
+                            bnb_4bit_quant_type="nf4",
+                            bnb_4bit_use_double_quant=True,
+                        )
+                    except ImportError:
+                        log.warning("bitsandbytes not installed, falling back to torch_dtype=auto with device_map=auto")
+                        load_kwargs["torch_dtype"] = compute_dtype
+                else:
+                    log.info(f"Total VRAM ({total_vram_gb:.1f}GB) >= 28GB -> Loading in {compute_dtype}")
+                    load_kwargs["torch_dtype"] = compute_dtype
+        else:
+            log.info("No CUDA detected. Loading on CPU in float32...")
+            load_kwargs["device_map"] = "cpu"
+            load_kwargs["torch_dtype"] = torch.float32
+
+        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, **load_kwargs)
+        model.eval()
         model_loaded = True
-        log.info("Model loaded!")
+        log.info("Cogito-0.9.1-15B model loaded successfully!")
     except Exception as e:
-        log.error(f"Model load failed: {e}")
+        log.error(f"Model load failed: {e}", exc_info=True)
     finally:
         model_loading = False
 
@@ -489,90 +540,268 @@ def chat(body: ChatReq, req: Request, kd=Depends(auth)):
     not_ready()
     prompt = build_prompt(body.messages) + "<think>\n"
     base_stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else [])
-    stop = base_stop + ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar", "прекрасн", "建档立"]
+    stop_list = base_stop + ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar", "прекрасн", "建档立"]
     rid = f"chatcmpl-{uuid.uuid4().hex}"
 
+    import torch
+    from transformers import TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
+
+    inputs = tokenizer(prompt, return_tensors="pt")
+    if torch.cuda.is_available() and hasattr(model, "device"):
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    class StringStopCriteria(StoppingCriteria):
+        def __init__(self, tok_inst, stop_words, input_length):
+            super().__init__()
+            self.tok_inst = tok_inst
+            self.stop_words = stop_words
+            self.input_length = input_length
+
+        def __call__(self, input_ids: Any, scores: Any, **kwargs) -> bool:
+            gen_ids = input_ids[0][self.input_length:]
+            text = self.tok_inst.decode(gen_ids, skip_special_tokens=False)
+            for sw in self.stop_words:
+                if sw in text:
+                    return True
+            return False
+
+    stopping_criteria = StoppingCriteriaList([
+        StringStopCriteria(tokenizer, stop_list, inputs["input_ids"].shape[1])
+    ])
+
+    gen_kwargs = {
+        **inputs,
+        "max_new_tokens": body.max_tokens or DEFAULT_TOKENS,
+        "temperature": max(body.temperature, 1e-4) if body.temperature and body.temperature > 0 else 1e-4,
+        "top_p": body.top_p if body.top_p is not None and body.temperature and body.temperature > 0 else 1.0,
+        "do_sample": bool(body.temperature and body.temperature > 0),
+        "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+        "stopping_criteria": stopping_criteria,
+    }
+    if body.top_k and body.top_k > 0:
+        gen_kwargs["top_k"] = body.top_k
+    if body.repeat_penalty and body.repeat_penalty != 1.0:
+        gen_kwargs["repetition_penalty"] = body.repeat_penalty
+
     if body.stream:
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=False)
+        gen_kwargs["streamer"] = streamer
+
+        def run_generation():
+            with torch.no_grad():
+                try:
+                    with model_lock:
+                        model.generate(**gen_kwargs)
+                except Exception as e:
+                    log.error(f"Generation error: {e}")
+
+        t = threading.Thread(target=run_generation, daemon=True)
+        t.start()
+
         def gen():
             tok = 0
             created = ts()
             try:
                 yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':None}]})}\n\n"
                 yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':'<think>\n'},'finish_reason':None}]})}\n\n"
-                # SSE heartbeat: emit a comment line every SSE_HEARTBEAT_SECS so Cloudflare's
-                # idle upstream timer doesn't kill long <think> pauses. Comments (lines starting
-                # with ':') are part of SSE and ignored by clients, but count as data to proxies.
+                
                 last_heartbeat = time.time()
-                try:
-                    for chunk in llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop, stream=True):
-                        now = time.time()
-                        if now - last_heartbeat >= SSE_HEARTBEAT_SECS:
-                            yield ": heartbeat\n\n"
-                            last_heartbeat = now
-                        txt = chunk["choices"][0]["text"]
+                accumulated = ""
+                stopped = False
+                
+                for text_chunk in streamer:
+                    if stopped:
+                        continue
+                    now = time.time()
+                    if now - last_heartbeat >= SSE_HEARTBEAT_SECS:
+                        yield ": heartbeat\n\n"
+                        last_heartbeat = now
+                    
+                    accumulated += text_chunk
+                    
+                    hit_stop = None
+                    for sw in stop_list:
+                        if sw in accumulated:
+                            hit_stop = sw
+                            break
+                    
+                    if hit_stop:
+                        pre_stop = accumulated.split(hit_stop)[0]
+                        remaining_to_send = pre_stop[len(accumulated) - len(text_chunk) - len(hit_stop):]
+                        if remaining_to_send:
+                            tok += 1
+                            yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':remaining_to_send},'finish_reason':None}]})}\n\n"
+                        stopped = True
+                        break
+                    else:
                         tok += 1
-                        yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':txt},'finish_reason':None}]})}\n\n"
-                except Exception as e:
-                    log.error(f"stream err: {e}")
+                        yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':created,'model':body.model,'choices':[{'index':0,'delta':{'content':text_chunk},'finish_reason':None}]})}\n\n"
+
                 yield f"data: {json.dumps({'id':rid,'object':'chat.completion.chunk','created':ts(),'model':body.model,'choices':[{'index':0,'delta':{},'finish_reason':'stop'}]})}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as e:
-                # Last-resort guard: any exception in the SSE handshake itself (JSON encoding,
-                # generator teardown) would otherwise propagate to uvicorn and kill the worker.
-                # Log it and still emit [DONE] so the client sees a clean stream end.
                 log.error(f"stream gen fatal: {e}")
                 try: yield "data: [DONE]\n\n"
                 except Exception: pass
             try:
                 km.record(kd["key"], tok)
             except Exception: pass
-        # Connection: close forces Cloudflare's edge to tear down the upstream TCP
-        # connection as soon as [DONE] is flushed, instead of holding the keep-alive
-        # slot open and causing the next request to race it (502 retry storm).
-        # X-Accel-Buffering: no disables proxy buffering so bytes flush immediately.
+
         resp = StreamingResponse(gen(), media_type="text/event-stream")
         resp.headers["Connection"] = "close"
         resp.headers["X-Accel-Buffering"] = "no"
         return resp
 
-    out = llm(prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, top_k=body.top_k, repeat_penalty=body.repeat_penalty, stop=stop)
-    content = "<think>\n" + out["choices"][0]["text"]
-    u = out.get("usage", {})
-    total = u.get("total_tokens", 0)
-    km.record(kd["key"], total)
-    return {"id":rid,"object":"chat.completion","created":ts(),"model":body.model,"choices":[{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],"usage":{"prompt_tokens":u.get("prompt_tokens",0),"completion_tokens":u.get("completion_tokens",0),"total_tokens":total}}
+    # Non-streaming
+    with torch.no_grad():
+        with model_lock:
+            out_ids = model.generate(**gen_kwargs)
+    
+    in_len = inputs["input_ids"].shape[1]
+    gen_tokens = out_ids[0][in_len:]
+    raw_text = tokenizer.decode(gen_tokens, skip_special_tokens=False)
+    
+    clean_text = raw_text
+    for sw in stop_list:
+        if sw in clean_text:
+            clean_text = clean_text.split(sw)[0]
+
+    content = "<think>\n" + clean_text
+    total_tokens = len(gen_tokens) + in_len
+    prompt_tokens = in_len
+    completion_tokens = len(gen_tokens)
+    km.record(kd["key"], total_tokens)
+    return {
+        "id": rid,
+        "object": "chat.completion",
+        "created": ts(),
+        "model": body.model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens}
+    }
 
 @app.post("/v1/completions")
 def complete(body: CompReq, req: Request, kd=Depends(auth)):
     not_ready()
-    stop = body.stop if isinstance(body.stop,list) else ([body.stop] if body.stop else ["NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar"])
+    stop_list = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar", "прекрасн", "建档立"])
     rid = f"cmpl-{uuid.uuid4().hex}"
-    
+
+    import torch
+    from transformers import TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
+
+    inputs = tokenizer(body.prompt, return_tensors="pt")
+    if torch.cuda.is_available() and hasattr(model, "device"):
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    class StringStopCriteria(StoppingCriteria):
+        def __init__(self, tok_inst, stop_words, input_length):
+            super().__init__()
+            self.tok_inst = tok_inst
+            self.stop_words = stop_words
+            self.input_length = input_length
+
+        def __call__(self, input_ids: Any, scores: Any, **kwargs) -> bool:
+            gen_ids = input_ids[0][self.input_length:]
+            text = self.tok_inst.decode(gen_ids, skip_special_tokens=False)
+            for sw in self.stop_words:
+                if sw in text:
+                    return True
+            return False
+
+    stopping_criteria = StoppingCriteriaList([
+        StringStopCriteria(tokenizer, stop_list, inputs["input_ids"].shape[1])
+    ])
+
+    gen_kwargs = {
+        **inputs,
+        "max_new_tokens": body.max_tokens or DEFAULT_TOKENS,
+        "temperature": max(body.temperature, 1e-4) if body.temperature and body.temperature > 0 else 1e-4,
+        "top_p": body.top_p if body.top_p is not None and body.temperature and body.temperature > 0 else 1.0,
+        "do_sample": bool(body.temperature and body.temperature > 0),
+        "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+        "stopping_criteria": stopping_criteria,
+    }
+
     if body.stream:
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=False)
+        gen_kwargs["streamer"] = streamer
+
+        def run_generation():
+            with torch.no_grad():
+                try:
+                    with model_lock:
+                        model.generate(**gen_kwargs)
+                except Exception as e:
+                    log.error(f"Generation error: {e}")
+
+        t = threading.Thread(target=run_generation, daemon=True)
+        t.start()
+
         def gen():
             tok = 0
+            accumulated = ""
+            stopped = False
             try:
                 last_heartbeat = time.time()
-                for chunk in llm(body.prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, stop=stop, stream=True):
+                for text_chunk in streamer:
+                    if stopped:
+                        continue
                     now = time.time()
                     if now - last_heartbeat >= SSE_HEARTBEAT_SECS:
                         yield ": heartbeat\n\n"
                         last_heartbeat = now
-                    tok += 1
-                    yield f"data: {json.dumps(chunk)}\n\n"
+                    
+                    accumulated += text_chunk
+                    hit_stop = None
+                    for sw in stop_list:
+                        if sw in accumulated:
+                            hit_stop = sw
+                            break
+                    if hit_stop:
+                        pre_stop = accumulated.split(hit_stop)[0]
+                        remaining = pre_stop[len(accumulated) - len(text_chunk) - len(hit_stop):]
+                        if remaining:
+                            tok += 1
+                            chunk_data = {"id": rid, "object": "text_completion", "created": ts(), "model": body.model, "choices": [{"text": remaining, "index": 0, "finish_reason": None}]}
+                            yield f"data: {json.dumps(chunk_data)}\n\n"
+                        stopped = True
+                        break
+                    else:
+                        tok += 1
+                        chunk_data = {"id": rid, "object": "text_completion", "created": ts(), "model": body.model, "choices": [{"text": text_chunk, "index": 0, "finish_reason": None}]}
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
             except Exception: pass
+            yield f"data: {json.dumps({'id': rid, 'object': 'text_completion', 'created': ts(), 'model': body.model, 'choices': [{'text': '', 'index': 0, 'finish_reason': 'stop'}]})}\n\n"
             yield "data: [DONE]\n\n"
             km.record(kd["key"], tok)
-        # See chat/completions: Connection: close + X-Accel-Buffering: no prevents the
-        # 502-on-next-request race after a stream ends behind Cloudflare's free tunnel.
+
         resp = StreamingResponse(gen(), media_type="text/event-stream")
         resp.headers["Connection"] = "close"
         resp.headers["X-Accel-Buffering"] = "no"
         return resp
-        
-    out = llm(body.prompt, max_tokens=body.max_tokens, temperature=body.temperature, top_p=body.top_p, stop=stop)
-    km.record(kd["key"], out.get("usage", {}).get("total_tokens", 0))
-    return out
+
+    with torch.no_grad():
+        with model_lock:
+            out_ids = model.generate(**gen_kwargs)
+    in_len = inputs["input_ids"].shape[1]
+    gen_tokens = out_ids[0][in_len:]
+    raw_text = tokenizer.decode(gen_tokens, skip_special_tokens=False)
+    clean_text = raw_text
+    for sw in stop_list:
+        if sw in clean_text:
+            clean_text = clean_text.split(sw)[0]
+
+    km.record(kd["key"], len(gen_tokens) + in_len)
+    return {
+        "id": rid,
+        "object": "text_completion",
+        "created": ts(),
+        "model": body.model,
+        "choices": [{"text": clean_text, "index": 0, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": in_len, "completion_tokens": len(gen_tokens), "total_tokens": in_len + len(gen_tokens)}
+    }
 
 @app.post("/v1/admin/keys/create")
 async def key_create(body: KeyReq, adm=Depends(admin_auth)):
@@ -596,7 +825,7 @@ DASHBOARD = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cogito-0.9 API</title>
+<title>Cogito-0.9.1-15B API</title>
 <style>
 body{background:#0a0a0f;color:#e2e8f0;font-family:sans-serif;line-height:1.6;margin:0;padding:20px}
 .container{max-width:800px;margin:0 auto}
@@ -611,10 +840,11 @@ code{font-family:monospace}
 </head>
 <body>
 <div class="container">
-  <h1>Cogito-0.9 API</h1>
+  <h1>Cogito-0.9.1-15B API</h1>
   <div class="card">
     <h2>Status</h2>
     <p>Model: <span id="model">-</span></p>
+    <p>Format: <span>Safetensors (Transformers)</span></p>
     <p>State: <span id="status" class="status loading">Checking...</span></p>
     <p>Uptime: <span id="uptime">-</span></p>
   </div>
@@ -624,6 +854,7 @@ code{font-family:monospace}
       <li><code>GET /health</code> - Status</li>
       <li><code>GET /v1/models</code> - List models</li>
       <li><code>POST /v1/chat/completions</code> - Chat</li>
+      <li><code>POST /v1/completions</code> - Completions</li>
     </ul>
     <p>See <a href="/docs" style="color:#7c6fff">Swagger UI</a> for full documentation.</p>
   </div>
@@ -693,8 +924,6 @@ def start_tunnel(port: int) -> tuple[Optional[subprocess.Popen], Optional[str]]:
             text=True,
             bufsize=1,
         )
-        # Cloudflare prints the URL on a single line once the tunnel is established, but it
-        # may emit other progress lines (metrics, registration) first. Scan until we find one.
         deadline = time.time() + 60
         while time.time() < deadline:
             line = proc.stdout.readline()
@@ -705,7 +934,6 @@ def start_tunnel(port: int) -> tuple[Optional[subprocess.Popen], Optional[str]]:
                 continue
             if "trycloudflare.com" in line or ".cfargotunnel.com" in line:
                 for part in line.split():
-                    # The URL sometimes has trailing chars (period, comma) that break matching
                     clean = part.strip().rstrip(".,;)")
                     if clean.startswith("https://") and ("trycloudflare" in clean or "cfargotunnel" in clean):
                         return proc, clean
@@ -755,8 +983,6 @@ def start_server(model_path: Path, admin_key: str, model_cfg: dict) -> bool:
     server_file = WORK_DIR / "_cogito_server.py"
     server_file.write_text(SERVER_CODE)
 
-    # Kill any leftover server process before starting a new one. Without this, a half-dead
-    # previous server can still hold the port and the new one silently fails to bind.
     if _server_proc is not None:
         try:
             if _server_proc.poll() is None:
@@ -773,9 +999,8 @@ def start_server(model_path: Path, admin_key: str, model_cfg: dict) -> bool:
         "COGITO_ADMIN_KEY": admin_key,
         "COGITO_KEYS_FILE": str(KEYS_FILE),
         "PORT": str(PORT),
-        "COGITO_GPU_LAYERS": str(model_cfg.get("gpu_layers_default", -1)),
+        "COGITO_QUANT": str(model_cfg.get("quant", "auto")),
     })
-    # Append-mode log so we can see the history across restarts.
     log_handle = open(SERVER_LOG, "a", encoding="utf-8")
     log_handle.write(f"\n\n========== restart @ {time.strftime('%Y-%m-%d %H:%M:%S')} ==========\n")
     log_handle.flush()
@@ -813,16 +1038,12 @@ def cmd_setup(args: list = None):
     auto_model = (args[0] if args else None)
     model_cfg = choose_model(auto=auto_model)
     model_path = download_model(model_cfg)
-    save_state({"model_path": str(model_path), "model_key": list(k for k, v in MODELS.items() if v["file"] == model_cfg["file"])[0]})
+    model_key = [k for k, v in MODELS.items() if v.get("name") == model_cfg.get("name") or v.get("dir") == model_cfg.get("dir")][0]
+    save_state({"model_path": str(model_path), "model_key": model_key})
     print()
     ok("Setup complete! Run: python cogito.py start")
 
 def _is_server_healthy(port: int) -> bool:
-    """Hit /health on localhost; return True only if the server is up AND the model is loaded."""
-    # 5s (up from 2s): under token-generation load the GIL can stall urllib for several
-    # seconds, and a 2s timeout causes spurious "health failing" warnings that the watchdog
-    # would otherwise escalate into restarts mid-response. 5s tolerates that without losing
-    # real failure detection (5s is still way past any plausible model-load wait).
     try:
         with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=5) as r:
             data = json.loads(r.read())
@@ -831,9 +1052,6 @@ def _is_server_healthy(port: int) -> bool:
         return False
 
 def _public_health_ok(url: str, timeout: float = 10.0) -> bool:
-    """Hit the public URL's /health. Cloudflare returns an HTML 5xx (which surfaces as 502) if the
-    tunnel can't reach the upstream, so we wait a few seconds after bringing the tunnel up and
-    verify before announcing the URL."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -860,7 +1078,7 @@ def cmd_start(args: list = None):
         model_path_str = state.get("model_path")
 
     model_cfg = MODELS.get(model_key, list(MODELS.values())[0])
-    model_path = Path(model_path_str) if model_path_str else MODEL_DIR / model_cfg["file"]
+    model_path = Path(model_path_str) if model_path_str else MODEL_DIR / model_cfg.get("dir", "Cogito-0.9.1-15B")
 
     if not model_path.exists():
         warn(f"Model not found at {model_path}")
@@ -872,13 +1090,12 @@ def cmd_start(args: list = None):
     save_state({"admin_key": admin_key})
 
     header("Starting API Server")
-    info(f"Model: {model_path.name}")
+    info(f"Model: {MODEL_NAME} ({model_path.name})")
     info(f"Port:  {PORT}")
 
     step(1, "Starting FastAPI server...")
     started = start_server(model_path, admin_key, model_cfg)
     if not started:
-        # Retry once — slow Colab/Kaggle disks can miss the first port-open window
         warn("Server didn't open the port in time; retrying once...")
         time.sleep(3)
         started = start_server(model_path, admin_key, model_cfg)
@@ -891,12 +1108,9 @@ def cmd_start(args: list = None):
     start_keepalive(PORT)
 
     step(2, "Waiting for model to load into memory...")
-    # CRITICAL: do NOT bring up the public tunnel until the model is loaded.
-    # Otherwise Cloudflare will proxy requests to a server that returns 503, which
-    # Cloudflare surfaces as a 502 HTML error page ("possibly a proxy or Cloudflare block").
     model_ready = False
     start_wait = time.time()
-    while time.time() - start_wait < 600:  # 10 min — GGUF loads on CPU can be slow
+    while time.time() - start_wait < 600:
         if _is_server_healthy(PORT):
             model_ready = True
             break
@@ -924,8 +1138,6 @@ def cmd_start(args: list = None):
         warn("Tunnel failed. API is available locally only.")
         public_url = f"http://localhost:{PORT}"
 
-    # Smoke-test the public URL. Cloudflare returns HTML 502 when it can't reach upstream;
-    # verify the proxy works before we declare the API live.
     if public_url.startswith("http") and not public_url.startswith("http://localhost"):
         step(4, "Smoke-testing public URL through Cloudflare...")
         if _public_health_ok(public_url, timeout=15):
@@ -949,27 +1161,17 @@ def cmd_start(args: list = None):
     api_base = f"{public_url}/v1"
     inner_w = max(58, max(len(public_url), len(admin_key), len(docs_url), len(api_base)) + 14)
     print("\n  +" + "-" * inner_w + "+")
-    print(f"  |  {'Cogito-0.9 API is LIVE':<{inner_w-3}} |")
+    print(f"  |  {f'{MODEL_NAME} API is LIVE':<{inner_w-3}} |")
     print(f"  |  URL:       {public_url:<{inner_w-14}} |")
     print(f"  |  API Base:  {api_base:<{inner_w-14}} |")
     print(f"  |  Admin key: {admin_key:<{inner_w-14}} |")
     print(f"  |  Docs:      {docs_url:<{inner_w-14}} |")
     print("  +" + "-" * inner_w + "+\n")
 
-    # Main watchdog loop: watch both procs, AND check that the server is actually healthy
-    # (not just alive). A server that crashed into a Python traceback would still show a
-    # running PID but no working /health — that's the silent failure mode that produces
-    # the 502 HTML when Cloudflare retries.
-    #
-    # Decoupled restart counters: a hard process death (poll() != None) is a real crash
-    # and triggers an immediate restart with exponential backoff. A /health miss while
-    # the process is still alive is treated as transient (GIL stall during inference,
-    # localhost connection drop) — we only restart after HEALTH_MISS_THRESHOLD misses
-    # in a row, and the warn cooldown is widened to keep the log quiet under load.
-    PROC_RESTART_BACKOFF_MAX = 30        # seconds
-    HEALTH_MISS_THRESHOLD = 3            # consecutive misses -> treat as real failure
-    HEALTH_POLL_INTERVAL = 30            # seconds between watchdog probes
-    HEALTH_WARN_COOLDOWN = 60            # seconds between "health failing" warnings
+    PROC_RESTART_BACKOFF_MAX = 30
+    HEALTH_MISS_THRESHOLD = 3
+    HEALTH_POLL_INTERVAL = 30
+    HEALTH_WARN_COOLDOWN = 60
 
     proc_restart_attempts = 0
     health_miss_streak = 0
@@ -995,10 +1197,6 @@ def cmd_start(args: list = None):
                     err("Server restart failed; will retry.")
                     continue
 
-            # Liveness check — server is running but is it actually serving healthy /health?
-            # A single miss is tolerated (GIL stalls, localhost packet drops). Only escalate
-            # after HEALTH_MISS_THRESHOLD consecutive misses — that's the signal of a real
-            # broken server, not a momentary stall.
             if _is_server_healthy(PORT):
                 if health_miss_streak:
                     if not QUIET:
@@ -1023,12 +1221,9 @@ def cmd_start(args: list = None):
                         continue
                 elif now - last_warn > HEALTH_WARN_COOLDOWN:
                     last_warn = now
-                    # Single-miss transients are normal during heavy inference; demoted from
-                    # WARN to INFO so they don't look alarming. Set COGITO_QUIET=1 to hide.
                     if not QUIET:
                         info(f"Server is up but /health is failing ({health_miss_streak}/{HEALTH_MISS_THRESHOLD}).")
 
-            # Monitor Tunnel
             tunnel_alive = _tunnel_proc is not None and _tunnel_proc.poll() is None
             if not tunnel_alive:
                 warn("Cloudflare tunnel died! Restarting...")
@@ -1041,7 +1236,6 @@ def cmd_start(args: list = None):
                     public_url = new_url
                     save_state({"public_url": public_url})
                     info(f"New Tunnel URL: {public_url}")
-                    # Re-smoke-test after a tunnel restart so we don't keep a stale URL around
                     if not new_url.startswith("http://localhost"):
                         if _public_health_ok(new_url, timeout=10):
                             ok("New tunnel is reachable.")
@@ -1145,7 +1339,7 @@ def cmd_test(args: list = None):
     req.add_header("Authorization", f"Bearer {admin_key}")
     req.add_header("Content-Type", "application/json")
     req.data = json.dumps({
-        "model": state.get("model_key", "cogito-0.9-q4_k_m"),
+        "model": state.get("model_key", MODEL_ID),
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 200,
         "temperature": 0.7,
@@ -1176,7 +1370,7 @@ def cmd_status(args: list = None):
     header("Status")
     print(f"  URL:       {public_url or 'Not started'}")
     print(f"  Admin Key: {admin_key or 'Not set'}")
-    print(f"  Model:     {model_key or 'Not set'}")
+    print(f"  Model:     {MODEL_NAME} ({model_key or 'auto'})")
 
     if admin_key:
         data = api("GET", "/health", admin_key)
@@ -1233,3 +1427,4 @@ if __name__ == "__main__":
         fn(args[1:])
     else:
         print("Usage: python cogito.py [setup|start|keys|test|status]")
+

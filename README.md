@@ -1,6 +1,6 @@
-# Cogito-0.9 API
+# Cogito-0.9.1-15B API
 
-Self-hosted, OpenAI-compatible REST API for [Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9).
+Self-hosted, OpenAI-compatible REST API for [Cogito-0.9.1-15B](https://huggingface.co/ozaa77/Cogito-0.9.1-15B) (Safetensors).
 Runs on Kaggle or Google Colab. Free Cloudflare tunnel — no account, no token required.
 
 ---
@@ -35,7 +35,7 @@ else:
 %cd /kaggle/working/Cogito
 
 # 4. Install dependencies and start the server
-!pip install -q fastapi uvicorn[standard] python-multipart huggingface_hub pydantic requests
+!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken
 !python cogito.py start
 ```
 
@@ -64,7 +64,7 @@ else:
 %cd /content/Cogito
 
 # 4. Install dependencies and start the server
-!pip install -q fastapi uvicorn[standard] python-multipart huggingface_hub pydantic requests
+!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken
 !python cogito.py start
 ```
 
@@ -72,7 +72,7 @@ When the server is ready you will see:
 
 ```
   +----------------------------------------------------------+
-  |  Cogito-0.9 API is LIVE                                  |
+  |  Cogito-0.9.1-15B API is LIVE                            |
   |  URL:       https://xxxx.trycloudflare.com               |
   |  Admin key: cg-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx          |
   |  Docs:      https://xxxx.trycloudflare.com/docs          |
@@ -112,7 +112,7 @@ The API is fully OpenAI-compatible. Change `base_url` in any existing client and
 curl -X POST "https://YOURS.trycloudflare.com/v1/chat/completions" \
   -H "Authorization: Bearer cg-YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"cogito-0.9-q4_k_m","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
+  -d '{"model":"Cogito-0.9.1-15B","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
 ```
 
 ### Python
@@ -124,7 +124,7 @@ r = requests.post(
     "https://YOURS.trycloudflare.com/v1/chat/completions",
     headers={"Authorization": "Bearer cg-YOUR_KEY"},
     json={
-        "model": "cogito-0.9-q4_k_m",
+        "model": "Cogito-0.9.1-15B",
         "messages": [{"role": "user", "content": "Explain quantum entanglement simply."}],
         "max_tokens": 300,
         "temperature": 0.7,
@@ -144,7 +144,7 @@ client = OpenAI(
 )
 
 for chunk in client.chat.completions.create(
-    model="cogito-0.9-q4_k_m",
+    model="Cogito-0.9.1-15B",
     messages=[{"role": "user", "content": "What can you do?"}],
     stream=True,
 ):
@@ -159,7 +159,7 @@ from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(
     base_url="https://YOURS.trycloudflare.com/v1",
     api_key="cg-YOUR_KEY",
-    model="cogito-0.9-q4_k_m",
+    model="Cogito-0.9.1-15B",
 )
 print(llm.invoke("Who are you?").content)
 ```
@@ -259,12 +259,16 @@ Existing API keys keep working — only the base URL needs updating.
 
 ---
 
-## Models
+## Models & Quantization
 
-| File | Size | Notes |
-|---|---|---|
-| `cogito-0.9-q4_k_m.gguf` | ~5 GB | Faster, less VRAM |
-| `cogito-0.9-q8_0.gguf` | ~9 GB | Better quality, needs more VRAM |
+The model is loaded from [ozaa77/Cogito-0.9.1-15B](https://huggingface.co/ozaa77/Cogito-0.9.1-15B) in **safetensors** format.
+
+| Profile | Format | Target VRAM | Notes |
+|---|---|---|---|
+| `auto` (default) | Safetensors | Auto | Auto-detects VRAM & applies 4-bit NF4 if VRAM < 28GB |
+| `4bit` | Safetensors (NF4) | ~9 GB VRAM | Fits single 15-16GB GPU (Kaggle/Colab T4/P100) |
+| `8bit` | Safetensors (Int8) | ~15 GB VRAM | Balanced quality & speed |
+| `16bit` | Safetensors (FP16/BF16) | ~30 GB VRAM | Full precision (Multi-GPU 2xT4 / A100) |
 
 ---
 
@@ -272,14 +276,14 @@ Existing API keys keep working — only the base URL needs updating.
 
 ```
 python cogito.py              interactive menu
-python cogito.py setup        install deps and download model
-python cogito.py setup q4_k_m skip prompt, use q4_k_m
-python cogito.py setup q8_0   skip prompt, use q8_0
+python cogito.py setup        install deps and download model (auto profile)
+python cogito.py setup 4bit   skip prompt, download & configure 4-bit NF4 profile
+python cogito.py setup 8bit   skip prompt, download & configure 8-bit profile
+python cogito.py setup 16bit  skip prompt, download & configure full precision profile
 python cogito.py start        start server and tunnel
 python cogito.py keys         create, list, revoke keys
 python cogito.py test         send a test prompt
 python cogito.py status       show URL, keys, health
-python cogito.py help         show this list
 ```
 
 ---

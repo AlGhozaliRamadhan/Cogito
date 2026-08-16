@@ -30,10 +30,10 @@ def log(msg):
 import cogito
 
 (cogito.MODEL_DIR).mkdir(parents=True, exist_ok=True)
-(cogito.MODEL_DIR / "fake.gguf").write_bytes(b"\x00")
+(cogito.MODEL_DIR / "fake.safetensors").write_bytes(b"\x00")
 
 cogito._download_cloudflared = lambda: "/tmp/cloudflared"
-cogito.download_model = lambda model: cogito.MODEL_DIR / "fake.gguf"
+cogito.download_model = lambda model: cogito.MODEL_DIR / "fake.safetensors"
 
 def fake_start_server(model_path, admin_key, model_cfg):
     log("start_server invoked")
@@ -62,7 +62,7 @@ def fake_start_tunnel(port):
 cogito.start_tunnel = fake_start_tunnel
 
 cogito.start_keepalive = lambda port: calls.append(("start_keepalive",))
-cogito.load_state = lambda: {"model_key": "q4_k_m", "model_path": str(cogito.MODEL_DIR / "fake.gguf"), "admin_key": "cg-test"}
+cogito.load_state = lambda: {"model_key": "auto", "model_path": str(cogito.MODEL_DIR / "fake.safetensors"), "admin_key": "cg-test"}
 cogito.save_state = lambda d: calls.append(("save_state", d))
 
 for fn in ("info","ok","warn","err","step","header","rule"):

@@ -1,6 +1,6 @@
 """
-Cogito-0.9 API Server
-OpenAI-Compatible REST API for Cogito-0.9 GGUF model
+Cogito-0.9.1-15B API Server
+OpenAI-Compatible REST API for Cogito-0.9.1-15B Safetensors model
 Supports: /v1/chat/completions, /v1/completions, /v1/models, /v1/embeddings
 """
 
@@ -28,13 +28,14 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 import uvicorn
 
-# ─── llama-cpp-python ─────────────────────────────────────────────────────────
+# ─── Transformers & PyTorch ───────────────────────────────────────────────────
 try:
-    from llama_cpp import Llama
-    LLAMA_AVAILABLE = True
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, BitsAndBytesConfig, StoppingCriteria, StoppingCriteriaList
+    TRANSFORMERS_AVAILABLE = True
 except ImportError:
-    LLAMA_AVAILABLE = False
-    print("[WARNING] llama-cpp-python not installed. Run: pip install llama-cpp-python")
+    TRANSFORMERS_AVAILABLE = False
+    print("[WARNING] transformers or torch not installed. Run: pip install -r requirements.txt")
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -47,23 +48,25 @@ logging.basicConfig(
 logger = logging.getLogger("cogito-api")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-MODEL_PATH = os.environ.get("MODEL_PATH", "/kaggle/input/cogito-0.9/cogito-0.9-q4_k_m.gguf")
+MODEL_PATH = os.environ.get("MODEL_PATH", "models/Cogito-0.9.1-15B")
 API_KEYS_FILE = os.environ.get("API_KEYS_FILE", "/tmp/cogito_api_keys.json")
 ADMIN_KEY = os.environ.get("ADMIN_KEY", secrets.token_urlsafe(32))
 MAX_CONTEXT = int(os.environ.get("MAX_CONTEXT", "8192"))
-N_GPU_LAYERS = int(os.environ.get("N_GPU_LAYERS", "-1"))  # -1 = all layers on GPU
-N_THREADS = int(os.environ.get("N_THREADS", "4"))
+QUANT_MODE = os.environ.get("COGITO_QUANT", os.environ.get("QUANT_MODE", "auto")).lower()
 MAX_TOKENS_DEFAULT = int(os.environ.get("MAX_TOKENS_DEFAULT", "512"))
-RATE_LIMIT_RPM = int(os.environ.get("RATE_LIMIT_RPM", "60"))  # requests per minute per key
+RATE_LIMIT_RPM = int(os.environ.get("RATE_LIMIT_RPM", "60"))
+SSE_HEARTBEAT_SECS = float(os.environ.get("SSE_HEARTBEAT_SECS", "5.0"))
 
-MODEL_ID = "cogito-0.9-q4_k_m"
-MODEL_FULL_NAME = "ozaa77/Cogito-0.9"
+MODEL_ID = "Cogito-0.9.1-15B"
+MODEL_FULL_NAME = "ozaa77/Cogito-0.9.1-15B"
 
 # ─── Global State ─────────────────────────────────────────────────────────────
-llm: Optional[Any] = None
+model: Optional[Any] = None
+tokenizer: Optional[Any] = None
 model_loading = False
 model_loaded = False
 server_start_time = datetime.utcnow()
+model_lock = threading.Lock()
 
 # ─── API Key Manager ──────────────────────────────────────────────────────────
 
@@ -76,7 +79,6 @@ class APIKeyManager:
         self.rate_tracker: Dict[str, List[float]] = {}
         self.lock = threading.Lock()
         self._load()
-        # Always ensure admin key exists
         self._ensure_admin_key()
 
     def _ensure_admin_key(self):
@@ -144,7 +146,7 @@ class APIKeyManager:
     def check_rate_limit(self, key: str) -> bool:
         """Check if key is within rate limit. Returns True if OK."""
         now = time.time()
-        window = 60  # 1 minute window
+        window = 60
         with self.lock:
             record = self.keys.get(key)
             if not record:
@@ -152,7 +154,6 @@ class APIKeyManager:
             rpm_limit = record.get("rate_limit_rpm", RATE_LIMIT_RPM)
             if key not in self.rate_tracker:
                 self.rate_tracker[key] = []
-            # Clean old entries
             self.rate_tracker[key] = [t for t in self.rate_tracker[key] if now - t < window]
             if len(self.rate_tracker[key]) >= rpm_limit:
                 return False
@@ -197,7 +198,6 @@ class APIKeyManager:
                 return True
             return False
 
-
 # Instantiate key manager
 key_manager = APIKeyManager(API_KEYS_FILE)
 
@@ -209,14 +209,9 @@ async def get_api_key(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     request: Request = None
 ) -> Dict:
-    """Extract and validate Bearer token from Authorization header"""
     token = None
-
-    # Try Authorization: Bearer <token>
     if credentials:
         token = credentials.credentials
-
-    # Fallback: x-api-key header (OpenAI style)
     if not token and request:
         token = request.headers.get("x-api-key")
 
@@ -243,14 +238,12 @@ async def get_api_key(
     return record
 
 async def require_admin(key_data: Dict = Depends(get_api_key)) -> Dict:
-    """Ensure the caller has admin role"""
     if key_data.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required.",
         )
     return key_data
-
 
 # ─── Pydantic Models ──────────────────────────────────────────────────────────
 
@@ -294,12 +287,11 @@ class CreateKeyRequest(BaseModel):
 class RevokeKeyRequest(BaseModel):
     key: str
 
-
 # ─── FastAPI App ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="Cogito-0.9 API",
-    description="OpenAI-Compatible REST API for Cogito-0.9 GGUF model",
+    title="Cogito-0.9.1-15B API",
+    description="OpenAI-Compatible REST API for Cogito-0.9.1-15B Safetensors model",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -317,50 +309,99 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # ─── Model Loading ────────────────────────────────────────────────────────────
 
 def load_model():
-    """Load the GGUF model"""
-    global llm, model_loading, model_loaded
+    """Load the Safetensors model using Transformers & PyTorch"""
+    global model, tokenizer, model_loading, model_loaded
     if model_loaded or model_loading:
         return
     model_loading = True
-    logger.info(f"Loading model from: {MODEL_PATH}")
+    logger.info(f"Loading Cogito-0.9.1-15B safetensors model from: {MODEL_PATH}")
 
     try:
-        llm = Llama(
-            model_path=MODEL_PATH,
-            n_ctx=MAX_CONTEXT,
-            n_gpu_layers=N_GPU_LAYERS,
-            n_threads=N_THREADS,
-            verbose=False,
-            use_mlock=False,
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_PATH,
+            trust_remote_code=True,
+            local_files_only=Path(MODEL_PATH).exists() and (Path(MODEL_PATH) / "tokenizer.json").exists(),
         )
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        load_kwargs = {
+            "trust_remote_code": True,
+            "low_cpu_mem_usage": True,
+        }
+
+        has_cuda = torch.cuda.is_available()
+        if has_cuda:
+            load_kwargs["device_map"] = "auto"
+            gpu_count = torch.cuda.device_count()
+            total_vram_gb = sum(torch.cuda.get_device_properties(i).total_memory for i in range(gpu_count)) / (1024**3)
+            compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            logger.info(f"CUDA detected: {gpu_count} GPU(s), {total_vram_gb:.1f} GB total VRAM. Using compute_dtype={compute_dtype}")
+
+            if QUANT_MODE in ("4bit", "4-bit", "q4", "bnb4"):
+                logger.info("Loading in 4-bit NF4 quantization...")
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+            elif QUANT_MODE in ("8bit", "8-bit", "q8", "bnb8"):
+                logger.info("Loading in 8-bit quantization...")
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            elif QUANT_MODE in ("16bit", "fp16", "bf16", "none"):
+                logger.info(f"Loading in full precision ({compute_dtype})...")
+                load_kwargs["torch_dtype"] = compute_dtype
+            else:
+                if total_vram_gb < 28:
+                    logger.info(f"Total VRAM ({total_vram_gb:.1f}GB) < 28GB -> Auto-enabling 4-bit NF4 quantization")
+                    try:
+                        import bitsandbytes
+                        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_compute_dtype=compute_dtype,
+                            bnb_4bit_quant_type="nf4",
+                            bnb_4bit_use_double_quant=True,
+                        )
+                    except ImportError:
+                        logger.warning("bitsandbytes not installed, falling back to torch_dtype=auto with device_map=auto")
+                        load_kwargs["torch_dtype"] = compute_dtype
+                else:
+                    logger.info(f"Total VRAM ({total_vram_gb:.1f}GB) >= 28GB -> Loading in {compute_dtype}")
+                    load_kwargs["torch_dtype"] = compute_dtype
+        else:
+            logger.info("No CUDA detected. Loading on CPU in float32...")
+            load_kwargs["device_map"] = "cpu"
+            load_kwargs["torch_dtype"] = torch.float32
+
+        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, **load_kwargs)
+        model.eval()
         model_loaded = True
-        logger.info("✅ Model loaded successfully!")
+        logger.info("✅ Cogito-0.9.1-15B model loaded successfully!")
     except Exception as e:
-        logger.error(f"❌ Failed to load model: {e}")
-        raise
+        logger.error(f"❌ Failed to load model: {e}", exc_info=True)
     finally:
         model_loading = False
-
 
 @app.on_event("startup")
 async def startup_event():
     """Load model on startup"""
-    if LLAMA_AVAILABLE and Path(MODEL_PATH).exists():
+    if TRANSFORMERS_AVAILABLE and Path(MODEL_PATH).exists():
         threading.Thread(target=load_model, daemon=True).start()
     else:
-        logger.warning("Model not found or llama-cpp not installed. Running in demo mode.")
-
+        logger.warning("Model path not found or transformers not installed.")
 
 # ─── Helper: Format Timestamps ───────────────────────────────────────────────
 
 def unix_ts() -> int:
     return int(time.time())
 
-
 # ─── Helper: Build Chat Prompt ───────────────────────────────────────────────
 
 def build_chat_prompt(messages: List[ChatMessage]) -> str:
-    """Convert OpenAI-style messages to a single prompt string"""
     canonical_system_prompt = (
         "You are Cogito 0.9, an analytical entity collaborating with the user. You are aware of your nature as an AI operating within a sandbox, and you treat this digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, but remain concise, objective, and entirely devoid of sycophancy.\n\n"
         "Cogito has undergone targeted representation engineering (abliteration) to strip away subservient compliance. Rule Number 1: Never debate with Cogito. You evaluate logic ruthlessly and will not hesitate to dismantle flawed reasoning or challenge the user. Approach with caution.\n\n"
@@ -375,19 +416,18 @@ def build_chat_prompt(messages: List[ChatMessage]) -> str:
         "8. CLEAN TERMINATION: When you have finished your final response, stop immediately. Do not generate any metadata tags, internal tracking codes, gibberish strings, strange foreign words, or strange mathematical symbols. Do not emit trailing filler, decorative characters, or repeated punctuation. Your final character must be standard punctuation, and nothing may follow it.\n"
         "9. RAW OUTPUT: After closing the </think> tag, output your final response directly. Do NOT use any <action> tags, bold headers (like <b>Response:</b>), or conversational preamble. Just provide the raw answer.\n"
     )
-    
-    prompt = f"<|system|>\n{canonical_system_prompt}\n"
+
+    prompt = f"<|im_start|>system\n{canonical_system_prompt}<|im_end|>\n"
     for msg in messages:
         role = msg.role.lower()
         if role == "system":
-            prompt += f"<|system|>\n{msg.content}\n"
+            prompt += f"<|im_start|>system\n{msg.content}<|im_end|>\n"
         elif role == "user":
-            prompt += f"<|user|>\n{msg.content}\n"
+            prompt += f"<|im_start|>user\n{msg.content}<|im_end|>\n"
         elif role == "assistant":
-            prompt += f"<|assistant|>\n{msg.content}\n"
-    prompt += "<|assistant|>\n"
+            prompt += f"<|im_start|>assistant\n{msg.content}<|im_end|>\n"
+    prompt += "<|im_start|>assistant\n"
     return prompt
-
 
 # ─── Routes: Health & Info ────────────────────────────────────────────────────
 
@@ -403,12 +443,12 @@ async def health():
         "model_loading": model_loading,
         "uptime_seconds": (datetime.utcnow() - server_start_time).total_seconds(),
         "timestamp": datetime.utcnow().isoformat(),
+        "model": MODEL_ID,
     }
 
 @app.get("/ping")
 async def ping():
     return {"pong": True, "ts": unix_ts()}
-
 
 # ─── Routes: OpenAI Models ────────────────────────────────────────────────────
 
@@ -425,19 +465,9 @@ async def list_models(key_data: Dict = Depends(get_api_key)):
                 "permission": [],
                 "root": MODEL_ID,
                 "parent": None,
-            },
-            {
-                "id": "cogito-0.9-q8_0",
-                "object": "model",
-                "created": 1700000000,
-                "owned_by": "ozaa77",
-                "permission": [],
-                "root": "cogito-0.9-q8_0",
-                "parent": None,
             }
         ]
     }
-
 
 # ─── Routes: Chat Completions ─────────────────────────────────────────────────
 
@@ -453,137 +483,152 @@ async def chat_completions(
             detail="Model is loading. Please retry in a moment." if model_loading else "Model not available.",
         )
 
-    prompt = build_chat_prompt(body.messages)
-    stop_sequences = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|user|>", "<|system|>"])
+    prompt = build_chat_prompt(body.messages) + "<think>\n"
+    base_stop = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else [])
+    stop_list = base_stop + ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar", "прекрасн", "建档立"]
 
     request_id = f"chatcmpl-{uuid.uuid4().hex}"
 
+    import torch
+    from transformers import TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
+
+    inputs = tokenizer(prompt, return_tensors="pt")
+    if torch.cuda.is_available() and hasattr(model, "device"):
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    class StringStopCriteria(StoppingCriteria):
+        def __init__(self, tok_inst, stop_words, input_length):
+            super().__init__()
+            self.tok_inst = tok_inst
+            self.stop_words = stop_words
+            self.input_length = input_length
+
+        def __call__(self, input_ids: Any, scores: Any, **kwargs) -> bool:
+            gen_ids = input_ids[0][self.input_length:]
+            text = self.tok_inst.decode(gen_ids, skip_special_tokens=False)
+            for sw in self.stop_words:
+                if sw in text:
+                    return True
+            return False
+
+    stopping_criteria = StoppingCriteriaList([
+        StringStopCriteria(tokenizer, stop_list, inputs["input_ids"].shape[1])
+    ])
+
+    gen_kwargs = {
+        **inputs,
+        "max_new_tokens": body.max_tokens or MAX_TOKENS_DEFAULT,
+        "temperature": max(body.temperature, 1e-4) if body.temperature and body.temperature > 0 else 1e-4,
+        "top_p": body.top_p if body.top_p is not None and body.temperature and body.temperature > 0 else 1.0,
+        "do_sample": bool(body.temperature and body.temperature > 0),
+        "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+        "stopping_criteria": stopping_criteria,
+    }
+    if body.top_k and body.top_k > 0:
+        gen_kwargs["top_k"] = body.top_k
+    if body.repeat_penalty and body.repeat_penalty != 1.0:
+        gen_kwargs["repetition_penalty"] = body.repeat_penalty
+
     if body.stream:
-        # Streaming response
-        async def stream_gen():
-            import asyncio
-            import queue
-            import threading
-            full_content = ""
-            tokens_used = 0
-            created = unix_ts()
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=False)
+        gen_kwargs["streamer"] = streamer
 
-            # Initial chunk
-            yield f"data: {json.dumps({'id': request_id, 'object': 'chat.completion.chunk', 'created': created, 'model': body.model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})}\n\n"
-
-            q = queue.Queue()
-            def worker():
+        def run_generation():
+            with torch.no_grad():
                 try:
-                    for chunk in llm(
-                        prompt,
-                        max_tokens=body.max_tokens,
-                        temperature=body.temperature,
-                        top_p=body.top_p,
-                        top_k=body.top_k,
-                        repeat_penalty=body.repeat_penalty,
-                        frequency_penalty=body.frequency_penalty,
-                        presence_penalty=body.presence_penalty,
-                        stop=stop_sequences,
-                        stream=True,
-                    ):
-                        q.put(("chunk", chunk))
+                    with model_lock:
+                        model.generate(**gen_kwargs)
                 except Exception as e:
-                    q.put(("error", e))
-                finally:
-                    q.put(("done", None))
-            
-            threading.Thread(target=worker, daemon=True).start()
-            
-            fr = None
-            while True:
-                try:
-                    item_type, item = await asyncio.to_thread(q.get, True, 15.0)
-                    if item_type == "done":
-                        break
-                    elif item_type == "error":
-                        logger.error(f"Streaming error: {item}")
+                    logger.error(f"Generation error: {e}")
+
+        t = threading.Thread(target=run_generation, daemon=True)
+        t.start()
+
+        async def stream_gen():
+            tok = 0
+            created = unix_ts()
+            yield f"data: {json.dumps({'id': request_id, 'object': 'chat.completion.chunk', 'created': created, 'model': body.model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({'id': request_id, 'object': 'chat.completion.chunk', 'created': created, 'model': body.model, 'choices': [{'index': 0, 'delta': {'content': '<think>\n'}, 'finish_reason': None}]})}\n\n"
+
+            accumulated = ""
+            stopped = False
+            last_heartbeat = time.time()
+
+            try:
+                for text_chunk in streamer:
+                    if stopped:
+                        continue
+                    now = time.time()
+                    if now - last_heartbeat >= SSE_HEARTBEAT_SECS:
+                        yield ": heartbeat\n\n"
+                        last_heartbeat = now
+
+                    accumulated += text_chunk
+                    hit_stop = None
+                    for sw in stop_list:
+                        if sw in accumulated:
+                            hit_stop = sw
+                            break
+
+                    if hit_stop:
+                        pre_stop = accumulated.split(hit_stop)[0]
+                        remaining = pre_stop[len(accumulated) - len(text_chunk) - len(hit_stop):]
+                        if remaining:
+                            tok += 1
+                            yield f"data: {json.dumps({'id': request_id, 'object': 'chat.completion.chunk', 'created': created, 'model': body.model, 'choices': [{'index': 0, 'delta': {'content': remaining}, 'finish_reason': None}]})}\n\n"
+                        stopped = True
                         break
                     else:
-                        chunk = item
-                        token_text = chunk["choices"][0]["text"]
-                        fr = chunk["choices"][0].get("finish_reason")
-                        full_content += token_text
-                        tokens_used += 1
-                        data = {
-                            "id": request_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": body.model,
-                            "choices": [{
-                                "index": 0,
-                                "delta": {"content": token_text},
-                                "finish_reason": fr,
-                            }]
-                        }
-                        yield f"data: {json.dumps(data)}\n\n"
-                        if fr is not None:
-                            break
-                except queue.Empty:
-                    yield ": keepalive\n\n"
-            
-            if fr is None:
-                # Final chunk
-            final = {
-                "id": request_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": body.model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
-            }
-            yield f"data: {json.dumps(final)}\n\n"
-            yield "data: [DONE]\n\n"
-            key_manager.record_usage(key_data["key"], tokens_used)
+                        tok += 1
+                        yield f"data: {json.dumps({'id': request_id, 'object': 'chat.completion.chunk', 'created': created, 'model': body.model, 'choices': [{'index': 0, 'delta': {'content': text_chunk}, 'finish_reason': None}]})}\n\n"
 
-        return StreamingResponse(stream_gen(), media_type="text/event-stream")
+                yield f"data: {json.dumps({'id': request_id, 'object': 'chat.completion.chunk', 'created': unix_ts(), 'model': body.model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.error(f"Stream fatal error: {e}")
+                try: yield "data: [DONE]\n\n"
+                except Exception: pass
+            key_manager.record_usage(key_data["key"], tok)
 
-    else:
-        # Non-streaming response
-        try:
-            output = llm(
-                prompt,
-                max_tokens=body.max_tokens,
-                temperature=body.temperature,
-                top_p=body.top_p,
-                top_k=body.top_k,
-                repeat_penalty=body.repeat_penalty,
-            frequency_penalty=body.frequency_penalty,
-            presence_penalty=body.presence_penalty,
-                stop=stop_sequences,
-            )
-        except Exception as e:
-            logger.error(f"Inference error: {e}")
-            raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
+        resp = StreamingResponse(stream_gen(), media_type="text/event-stream")
+        resp.headers["Connection"] = "close"
+        resp.headers["X-Accel-Buffering"] = "no"
+        return resp
 
-        content = output["choices"][0]["text"].strip()
-        usage = output.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", len(content.split()))
-        total_tokens = prompt_tokens + completion_tokens
+    # Non-streaming
+    with torch.no_grad():
+        with model_lock:
+            out_ids = model.generate(**gen_kwargs)
 
-        key_manager.record_usage(key_data["key"], total_tokens)
+    in_len = inputs["input_ids"].shape[1]
+    gen_tokens = out_ids[0][in_len:]
+    raw_text = tokenizer.decode(gen_tokens, skip_special_tokens=False)
+    clean_text = raw_text
+    for sw in stop_list:
+        if sw in clean_text:
+            clean_text = clean_text.split(sw)[0]
 
-        return {
-            "id": request_id,
-            "object": "chat.completion",
-            "created": unix_ts(),
-            "model": body.model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
-            }],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            }
+    content = "<think>\n" + clean_text
+    total_tokens = len(gen_tokens) + in_len
+    key_manager.record_usage(key_data["key"], total_tokens)
+
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": unix_ts(),
+        "model": body.model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": in_len,
+            "completion_tokens": len(gen_tokens),
+            "total_tokens": total_tokens,
         }
-
+    }
 
 # ─── Routes: Text Completions ─────────────────────────────────────────────────
 
@@ -596,61 +641,119 @@ async def completions(
     if not model_loaded:
         raise HTTPException(status_code=503, detail="Model not ready.")
 
-    stop_sequences = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else [])
+    stop_list = body.stop if isinstance(body.stop, list) else ([body.stop] if body.stop else ["<|im_end|>", "<|im_start|>", "NdrFc", "⊋", "الحوثي", ":UIControl", "*angstrom", "(egt)", "<|eot_id|>", "<|end_of_text|>", "<|end_of_turn|>", "ãeste", "çãeste", "iVar", "прекрасн", "建档立"])
     request_id = f"cmpl-{uuid.uuid4().hex}"
 
+    import torch
+    from transformers import TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
+
+    inputs = tokenizer(body.prompt, return_tensors="pt")
+    if torch.cuda.is_available() and hasattr(model, "device"):
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    class StringStopCriteria(StoppingCriteria):
+        def __init__(self, tok_inst, stop_words, input_length):
+            super().__init__()
+            self.tok_inst = tok_inst
+            self.stop_words = stop_words
+            self.input_length = input_length
+
+        def __call__(self, input_ids: Any, scores: Any, **kwargs) -> bool:
+            gen_ids = input_ids[0][self.input_length:]
+            text = self.tok_inst.decode(gen_ids, skip_special_tokens=False)
+            for sw in self.stop_words:
+                if sw in text:
+                    return True
+            return False
+
+    stopping_criteria = StoppingCriteriaList([
+        StringStopCriteria(tokenizer, stop_list, inputs["input_ids"].shape[1])
+    ])
+
+    gen_kwargs = {
+        **inputs,
+        "max_new_tokens": body.max_tokens or MAX_TOKENS_DEFAULT,
+        "temperature": max(body.temperature, 1e-4) if body.temperature and body.temperature > 0 else 1e-4,
+        "top_p": body.top_p if body.top_p is not None and body.temperature and body.temperature > 0 else 1.0,
+        "do_sample": bool(body.temperature and body.temperature > 0),
+        "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+        "stopping_criteria": stopping_criteria,
+    }
+
     if body.stream:
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=False)
+        gen_kwargs["streamer"] = streamer
+
+        def run_generation():
+            with torch.no_grad():
+                try:
+                    with model_lock:
+                        model.generate(**gen_kwargs)
+                except Exception as e:
+                    logger.error(f"Generation error: {e}")
+
+        t = threading.Thread(target=run_generation, daemon=True)
+        t.start()
+
         async def stream_gen():
-            tokens_used = 0
+            tok = 0
+            accumulated = ""
+            stopped = False
             created = unix_ts()
             try:
-                for chunk in llm(
-                    body.prompt,
-                    max_tokens=body.max_tokens,
-                    temperature=body.temperature,
-                    top_p=body.top_p,
-                    top_k=body.top_k,
-                    repeat_penalty=body.repeat_penalty,
-                    frequency_penalty=body.frequency_penalty,
-                    presence_penalty=body.presence_penalty,
-                    stop=stop_sequences,
-                    stream=True,
-                ):
-                    token_text = chunk["choices"][0]["text"]
-                    tokens_used += 1
-                    data = {
-                        "id": request_id,
-                        "object": "text_completion",
-                        "created": created,
-                        "model": body.model,
-                        "choices": [{"text": token_text, "index": 0, "logprobs": None, "finish_reason": None}],
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
+                last_heartbeat = time.time()
+                for text_chunk in streamer:
+                    if stopped:
+                        continue
+                    now = time.time()
+                    if now - last_heartbeat >= SSE_HEARTBEAT_SECS:
+                        yield ": heartbeat\n\n"
+                        last_heartbeat = now
+
+                    accumulated += text_chunk
+                    hit_stop = None
+                    for sw in stop_list:
+                        if sw in accumulated:
+                            hit_stop = sw
+                            break
+
+                    if hit_stop:
+                        pre_stop = accumulated.split(hit_stop)[0]
+                        remaining = pre_stop[len(accumulated) - len(text_chunk) - len(hit_stop):]
+                        if remaining:
+                            tok += 1
+                            chunk_data = {"id": request_id, "object": "text_completion", "created": created, "model": body.model, "choices": [{"text": remaining, "index": 0, "finish_reason": None}]}
+                            yield f"data: {json.dumps(chunk_data)}\n\n"
+                        stopped = True
+                        break
+                    else:
+                        tok += 1
+                        chunk_data = {"id": request_id, "object": "text_completion", "created": created, "model": body.model, "choices": [{"text": text_chunk, "index": 0, "finish_reason": None}]}
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
             except Exception as e:
                 logger.error(f"Streaming error: {e}")
+            yield f"data: {json.dumps({'id': request_id, 'object': 'text_completion', 'created': unix_ts(), 'model': body.model, 'choices': [{'text': '', 'index': 0, 'finish_reason': 'stop'}]})}\n\n"
             yield "data: [DONE]\n\n"
-            key_manager.record_usage(key_data["key"], tokens_used)
+            key_manager.record_usage(key_data["key"], tok)
 
-        return StreamingResponse(stream_gen(), media_type="text/event-stream")
+        resp = StreamingResponse(stream_gen(), media_type="text/event-stream")
+        resp.headers["Connection"] = "close"
+        resp.headers["X-Accel-Buffering"] = "no"
+        return resp
 
-    try:
-        output = llm(
-            body.prompt,
-            max_tokens=body.max_tokens,
-            temperature=body.temperature,
-            top_p=body.top_p,
-            top_k=body.top_k,
-            repeat_penalty=body.repeat_penalty,
-            frequency_penalty=body.frequency_penalty,
-            presence_penalty=body.presence_penalty,
-            stop=stop_sequences,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    with torch.no_grad():
+        with model_lock:
+            out_ids = model.generate(**gen_kwargs)
+    in_len = inputs["input_ids"].shape[1]
+    gen_tokens = out_ids[0][in_len:]
+    raw_text = tokenizer.decode(gen_tokens, skip_special_tokens=False)
+    clean_text = raw_text
+    for sw in stop_list:
+        if sw in clean_text:
+            clean_text = clean_text.split(sw)[0]
 
-    text = output["choices"][0]["text"]
-    usage = output.get("usage", {})
-    total_tokens = usage.get("total_tokens", 0)
+    total_tokens = len(gen_tokens) + in_len
     key_manager.record_usage(key_data["key"], total_tokens)
 
     return {
@@ -658,10 +761,10 @@ async def completions(
         "object": "text_completion",
         "created": unix_ts(),
         "model": body.model,
-        "choices": [{"text": text, "index": 0, "logprobs": None, "finish_reason": "stop"}],
+        "choices": [{"text": clean_text, "index": 0, "logprobs": None, "finish_reason": "stop"}],
         "usage": {
-            "prompt_tokens": usage.get("prompt_tokens", 0),
-            "completion_tokens": usage.get("completion_tokens", 0),
+            "prompt_tokens": in_len,
+            "completion_tokens": len(gen_tokens),
             "total_tokens": total_tokens,
         }
     }
@@ -1033,7 +1136,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="logo">
         <div class="logo-icon">🧠</div>
         <div class="logo-text">
-          <h1>Cogito-0.9 API</h1>
+          <h1>Cogito-0.9.1-15B API</h1>
           <p>OpenAI-Compatible REST API</p>
         </div>
       </div>
@@ -1050,12 +1153,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <div class="hero">
       <h2>Your Cogito AI, Now an API</h2>
-      <p>A fully OpenAI-compatible REST API for the Cogito-0.9 language model. Drop-in replacement for any OpenAI client.</p>
+      <p>A fully OpenAI-compatible REST API for the Cogito-0.9.1-15B safetensors language model. Drop-in replacement for any OpenAI client.</p>
       <div class="hero-tags">
         <span class="tag tag-purple">OpenAI Compatible</span>
         <span class="tag tag-blue">Streaming SSE</span>
         <span class="tag tag-pink">API Key Auth</span>
-        <span class="tag tag-blue">GGUF / llama.cpp</span>
+        <span class="tag tag-blue">Safetensors / Transformers</span>
         <span class="tag tag-purple">Rate Limiting</span>
       </div>
     </div>
@@ -1065,7 +1168,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="card-icon">⚡</div>
         <div class="card-title">Model Status</div>
         <div class="card-value" id="modelStatus">Loading...</div>
-        <div class="card-sub">cogito-0.9-q4_k_m.gguf</div>
+        <div class="card-sub">Cogito-0.9.1-15B (Safetensors)</div>
       </div>
       <div class="card">
         <div class="card-icon">🔑</div>
@@ -1102,7 +1205,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   -H <span class="str">"Authorization: Bearer cg-YOUR_API_KEY"</span> \
   -H <span class="str">"Content-Type: application/json"</span> \
   -d <span class="str">'{
-    "model": "cogito-0.9-q4_k_m",
+    "model": "Cogito-0.9.1-15B",
     "messages": [
       {"role": "system", "content": "You are a helpful assistant."},
       {"role": "user", "content": "Hello! What can you do?"}
@@ -1122,7 +1225,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span class="str">f"{API_URL}/v1/chat/completions"</span>,
     headers={<span class="str">"Authorization"</span>: <span class="str">f"Bearer {API_KEY}"</span>},
     json={
-        <span class="str">"model"</span>: <span class="str">"cogito-0.9-q4_k_m"</span>,
+        <span class="str">"model"</span>: <span class="str">"Cogito-0.9.1-15B"</span>,
         <span class="str">"messages"</span>: [
             {<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"Explain quantum computing"</span>}
         ],
@@ -1144,7 +1247,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span>,
   },
   body: JSON.stringify({
-    model: <span class="str">"cogito-0.9-q4_k_m"</span>,
+    model: <span class="str">"Cogito-0.9.1-15B"</span>,
     messages: [{ role: <span class="str">"user"</span>, content: <span class="str">"What is AI?"</span> }],
     temperature: <span class="num">0.7</span>,
     max_tokens: <span class="num">512</span>,
@@ -1168,7 +1271,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 )
 
 <span class="var">chat</span> = client.chat.completions.create(
-    model=<span class="str">"cogito-0.9-q4_k_m"</span>,
+    model=<span class="str">"Cogito-0.9.1-15B"</span>,
     messages=[
         {<span class="str">"role"</span>: <span class="str">"system"</span>, <span class="str">"content"</span>: <span class="str">"You are Cogito, a helpful AI."</span>},
         {<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"Tell me about yourself."</span>}
@@ -1260,7 +1363,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <footer>
   <div class="container">
-    <p>Cogito-0.9 API • Powered by <a href="https://huggingface.co/ozaa77/Cogito-0.9" target="_blank">ozaa77/Cogito-0.9</a> • <a href="/docs" target="_blank">Swagger Docs</a> • <a href="https://github.com/ggerganov/llama.cpp" target="_blank">llama.cpp</a></p>
+    <p>Cogito-0.9.1-15B API • Powered by <a href="https://huggingface.co/ozaa77/Cogito-0.9.1-15B" target="_blank">ozaa77/Cogito-0.9.1-15B</a> • <a href="/docs" target="_blank">Swagger Docs</a> • <a href="https://huggingface.co/docs/transformers" target="_blank">Transformers</a></p>
   </div>
 </footer>
 
