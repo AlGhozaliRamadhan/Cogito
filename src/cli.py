@@ -101,6 +101,28 @@ def choose_model(auto: Optional[str] = None) -> Dict[str, str]:
     save_state({"model_key": key})
     return MODELS[key]
 
+def is_model_complete(model_path: Path, model_cfg: Dict[str, str] = None) -> bool:
+    if not model_path.exists():
+        return False
+    if model_path.is_file():
+        return model_path.stat().st_size > 1e6
+    # For safetensors directory: verify all shards or index exist
+    if (model_path / "model.safetensors.index.json").exists():
+        try:
+            with open(model_path / "model.safetensors.index.json", "r", encoding="utf-8") as f:
+                index_data = json.load(f)
+            weight_map = index_data.get("weight_map", {})
+            shards = set(weight_map.values())
+            if shards and all((model_path / s).exists() for s in shards):
+                return True
+        except Exception:
+            pass
+    if (model_path / "model-00008-of-00008.safetensors").exists():
+        return True
+    if (model_path / "model.safetensors").exists():
+        return True
+    return False
+
 def download_model(model_cfg: Dict[str, str]) -> Path:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     filename = model_cfg.get("file", "model.safetensors.index.json")
@@ -109,7 +131,7 @@ def download_model(model_cfg: Dict[str, str]) -> Path:
     # If it's a single GGUF file
     if filename.endswith(".gguf"):
         dest_file = MODEL_DIR / filename
-        if dest_file.exists():
+        if dest_file.exists() and dest_file.stat().st_size > 1e6:
             size_gb = dest_file.stat().st_size / 1e9
             ok(f"Model already present: {dest_file.name} ({size_gb:.2f} GB)")
             return dest_file
@@ -137,8 +159,8 @@ def download_model(model_cfg: Dict[str, str]) -> Path:
 
     # Otherwise normal 15B Safetensors repository
     dest_dir = MODEL_DIR / model_dir_name
-    if dest_dir.exists() and (dest_dir / "config.json").exists():
-        ok(f"Model already present at: {dest_dir}")
+    if is_model_complete(dest_dir, model_cfg):
+        ok(f"Model already present and complete at: {dest_dir}")
         return dest_dir
 
     header(f"Downloading {MODEL_NAME} Safetensors Model from {HF_REPO}")
@@ -260,7 +282,7 @@ def cmd_start(args: list = None):
     model_cfg = MODELS.get(model_key, list(MODELS.values())[0])
     model_path = Path(model_path_str) if model_path_str else MODEL_DIR / model_cfg.get("dir", "Cogito-0.9.1-15B")
 
-    if not model_path.exists():
+    if not is_model_complete(model_path, model_cfg):
         model_path = download_model_fn(model_cfg)
 
     admin_key = state.get("admin_key") or f"cg-{secrets.token_urlsafe(32)}"
