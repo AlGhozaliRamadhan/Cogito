@@ -8,7 +8,7 @@ import logging
 import threading
 import urllib.request
 import json
-from typing import Optional
+from typing import Optional, Any
 
 logger = logging.getLogger("cogito-supervisor")
 
