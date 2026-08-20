@@ -2,7 +2,7 @@
 Prompt Templates, Canonical Abliterated Directives, and ChatML Formatter
 """
 
-from typing import List
+from typing import List, Dict, Optional, Any, Union
 from pydantic import BaseModel
 
 # Canonical System Prompt (Cogito 0.9.1)
