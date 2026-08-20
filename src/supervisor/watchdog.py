@@ -43,9 +43,12 @@ def public_health_ok(url: str, timeout: float = 10.0) -> bool:
             time.sleep(1)
     return False
 
-def wait_for_port(port: int, timeout: float = 180.0) -> bool:
+def wait_for_port(port: int, timeout: float = 180.0, proc: Optional[Any] = None) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if proc is not None and hasattr(proc, "poll") and proc.poll() is not None:
+            # Process exited early (crashed or failed to start)
+            return False
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=1):
                 return True

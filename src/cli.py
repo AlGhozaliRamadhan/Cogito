@@ -198,13 +198,19 @@ def start_server(model_path: Path, admin_key: str, model_cfg: Dict[str, str]) ->
                 except Exception: current_proc.kill()
         except Exception: pass
 
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
     env = os.environ.copy()
+    pythonpath = str(PROJECT_ROOT)
+    if "PYTHONPATH" in env:
+        pythonpath = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+
     env.update({
         "COGITO_MODEL_PATH": str(model_path),
         "COGITO_ADMIN_KEY": admin_key,
         "COGITO_KEYS_FILE": str(KEYS_FILE),
         "PORT": str(PORT),
         "COGITO_QUANT": str(model_cfg.get("quant", "auto")),
+        "PYTHONPATH": pythonpath,
     })
 
     log_handle = open(SERVER_LOG, "a", encoding="utf-8")
@@ -213,6 +219,7 @@ def start_server(model_path: Path, admin_key: str, model_cfg: Dict[str, str]) ->
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "src.server.app"],
+        cwd=str(PROJECT_ROOT),
         env=env,
         stdout=log_handle,
         stderr=subprocess.STDOUT,
@@ -223,7 +230,7 @@ def start_server(model_path: Path, admin_key: str, model_cfg: Dict[str, str]) ->
 
     info(f"Server starting (PID {proc.pid})...")
     wait_fn = _get_attr("wait_for_port", wait_for_port)
-    return wait_fn(PORT, timeout=180)
+    return wait_fn(PORT, timeout=180, proc=proc)
 
 def api_call(method: str, path: str, admin_key: str, data: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
     url = f"http://localhost:{PORT}{path}"
@@ -304,7 +311,14 @@ def cmd_start(args: list = None):
     if started:
         ok(f"Server listening on port {PORT}")
     else:
-        err("Server failed to start. Check cogito_server.log.")
+        err("Server failed to start.")
+        if Path(SERVER_LOG).exists():
+            log_tail = Path(SERVER_LOG).read_text(encoding="utf-8", errors="replace").strip().splitlines()[-20:]
+            if log_tail:
+                print("\n--- LAST SERVER LOG OUTPUT ---")
+                for l in log_tail:
+                    print(f"  {l}")
+                print("------------------------------\n")
         return
 
     start_keepalive_fn(PORT)
