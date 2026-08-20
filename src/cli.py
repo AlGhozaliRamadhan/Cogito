@@ -53,7 +53,7 @@ def print_banner():
     gpu_info = f"GPU ({ENV['gpu_count']}x {ENV['gpu_name']})" if ENV['is_gpu'] else "CPU"
     env_label = f"{ENV['name']} - {gpu_info}"
     print("\n============================================================")
-    print(f" {MODEL_NAME} API Manager (Safetensors)")
+    print(f" {MODEL_NAME} API Manager")
     print(f" Environment: {env_label}")
     print("============================================================\n")
 
@@ -90,11 +90,8 @@ def install_deps():
     step(1, "Core server packages (fastapi, uvicorn, huggingface_hub, etc.)")
     run_pip(["fastapi>=0.111.0", "uvicorn[standard]>=0.29.0", "python-multipart>=0.0.9", "huggingface_hub>=0.23.0", "pydantic>=2.0.0", "requests>=2.31.0"])
 
-    step(2, "Inference engine (transformers, accelerate, safetensors, bitsandbytes, torch)")
-    packages = ["transformers>=4.40.0", "accelerate>=0.28.0", "safetensors>=0.4.0", "sentencepiece>=0.2.0", "tiktoken>=0.7.0"]
-    if ENV["is_gpu"]:
-        packages.append("bitsandbytes>=0.43.0")
-
+    step(2, "Inference engine (transformers, torch, bitsandbytes, jinja2)")
+    packages = ["transformers>=4.45.0", "accelerate>=0.28.0", "bitsandbytes>=0.43.0", "jinja2>=3.1.4"]
     run_pip(packages)
     ok("Dependencies ready")
 
@@ -106,17 +103,45 @@ def choose_model(auto: Optional[str] = None) -> Dict[str, str]:
 
 def download_model(model_cfg: Dict[str, str]) -> Path:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    dest_dir = MODEL_DIR / model_cfg.get("dir", "Cogito-0.9.1-15B")
+    filename = model_cfg.get("file", "model.safetensors.index.json")
+    model_dir_name = model_cfg.get("dir", "Cogito-0.9.1-15B")
 
-    if dest_dir.exists():
-        safetensor_files = list(dest_dir.glob("*.safetensors"))
-        config_file = dest_dir / "config.json"
-        if config_file.exists() and len(safetensor_files) > 0:
-            total_size_gb = sum(f.stat().st_size for f in dest_dir.rglob("*") if f.is_file()) / 1e9
-            ok(f"Model already present: {dest_dir.name} ({total_size_gb:.2f} GB across {len(safetensor_files)} shards)")
-            return dest_dir
+    # If it's a single GGUF file
+    if filename.endswith(".gguf"):
+        dest_file = MODEL_DIR / filename
+        if dest_file.exists():
+            size_gb = dest_file.stat().st_size / 1e9
+            ok(f"Model already present: {dest_file.name} ({size_gb:.2f} GB)")
+            return dest_file
 
-    header(f"Downloading {MODEL_NAME} Safetensors Model")
+        header(f"Downloading {MODEL_NAME} GGUF Model ({filename})")
+        try:
+            from huggingface_hub import hf_hub_download
+            kwargs = {
+                "repo_id": "ozaa77/Cogito-0.9.1-15B-GGUF",
+                "filename": filename,
+                "local_dir": str(MODEL_DIR),
+                "local_dir_use_symlinks": False,
+            }
+            hf_token = os.environ.get("HF_TOKEN")
+            if hf_token:
+                kwargs["token"] = hf_token
+
+            path = hf_hub_download(**kwargs)
+            size_gb = Path(path).stat().st_size / 1e9
+            ok(f"Downloaded model to: {Path(path).name} ({size_gb:.2f} GB)")
+            return Path(path)
+        except Exception as e:
+            err(f"huggingface hf_hub_download failed: {e}")
+            sys.exit(1)
+
+    # Otherwise normal 15B Safetensors repository
+    dest_dir = MODEL_DIR / model_dir_name
+    if dest_dir.exists() and (dest_dir / "config.json").exists():
+        ok(f"Model already present at: {dest_dir}")
+        return dest_dir
+
+    header(f"Downloading {MODEL_NAME} Safetensors Model from {HF_REPO}")
     try:
         from huggingface_hub import snapshot_download
         kwargs = {
@@ -129,9 +154,8 @@ def download_model(model_cfg: Dict[str, str]) -> Path:
             kwargs["token"] = hf_token
 
         path = snapshot_download(**kwargs)
-        total_size_gb = sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e9
-        ok(f"Downloaded model snapshot to: {Path(path).name} ({total_size_gb:.2f} GB)")
-        return Path(path)
+        ok(f"Downloaded model to: {dest_dir}")
+        return Path(dest_dir)
     except Exception as e:
         err(f"huggingface snapshot_download failed: {e}")
         sys.exit(1)

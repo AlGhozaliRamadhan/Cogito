@@ -66,6 +66,48 @@ class MockModel:
     def __init__(self):
         self.device = "cpu"
 
+    def create_chat_completion(self, messages, max_tokens=512, stream=False, **kwargs):
+        if stream:
+            def _gen():
+                yield {"choices": [{"delta": {"role": "assistant", "content": "<think>\n"}, "finish_reason": None}]}
+                yield {"choices": [{"delta": {"content": "Thinking process and verification.\n</think>\n"}, "finish_reason": None}]}
+                yield {"choices": [{"delta": {"content": "Here is the verified answer."}, "finish_reason": None}]}
+                yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+            return _gen()
+        else:
+            return {
+                "id": "chatcmpl-mock-12345",
+                "object": "chat.completion",
+                "created": 1700000000,
+                "model": "Cogito-0.9.1-15B",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "<think>\nThinking process and verification.\n</think>\nHere is the verified answer."
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 15, "total_tokens": 35}
+            }
+
+    def create_completion(self, prompt, max_tokens=512, stream=False, **kwargs):
+        if stream:
+            def _gen():
+                yield {"choices": [{"text": " Verified", "index": 0, "finish_reason": None}]}
+                yield {"choices": [{"text": " completion text.", "index": 0, "finish_reason": None}]}
+                yield {"choices": [{"text": "", "index": 0, "finish_reason": "stop"}]}
+            return _gen()
+        else:
+            return {
+                "id": "cmpl-mock-12345",
+                "object": "text_completion",
+                "created": 1700000000,
+                "model": "Cogito-0.9.1-15B",
+                "choices": [{"text": " Verified completion text.", "index": 0, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            }
+
     def eval(self):
         return self
 

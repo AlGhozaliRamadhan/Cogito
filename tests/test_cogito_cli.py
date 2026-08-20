@@ -17,7 +17,7 @@ def test_detect_env():
 
 def test_choose_model():
     m_auto = cli.choose_model("auto")
-    assert m_auto["quant"] == "auto"
+    assert m_auto["quant"] == "4bit"
 
     m_4bit = cli.choose_model("4bit")
     assert m_4bit["quant"] == "4bit"

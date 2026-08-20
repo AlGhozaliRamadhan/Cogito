@@ -5,6 +5,7 @@ Thread-safe API Key Manager with Atomic Disk Persistence and Sliding-Window Rate
 import os
 import json
 import time
+import atexit
 import secrets
 import logging
 import threading
@@ -15,17 +16,29 @@ from typing import Dict, Any, List, Optional
 logger = logging.getLogger("cogito-keys")
 
 class APIKeyManager:
-    """Thread-safe, crash-resilient API key manager with atomic disk persistence."""
+    """
+    Thread-safe, high-performance API key manager with in-memory usage tracking,
+    asynchronous periodic disk syncing, and atomic persistence.
+    """
 
-    def __init__(self, keys_file: str, admin_key: Optional[str] = None):
+    def __init__(self, keys_file: str, admin_key: Optional[str] = None, sync_interval: float = 30.0):
         self.keys_file = Path(keys_file)
         self.admin_key = admin_key
+        self.sync_interval = sync_interval
         self.keys: Dict[str, Dict[str, Any]] = {}
         self.rate_tracker: Dict[str, List[float]] = {}
         self.lock = threading.Lock()
+        self._dirty = False
+        self._running = True
+
         self._load()
         if self.admin_key:
             self._ensure_admin_key(self.admin_key)
+
+        # Background flusher thread
+        self._flusher_thread = threading.Thread(target=self._background_flusher, daemon=True)
+        self._flusher_thread.start()
+        atexit.register(self.flush)
 
     def _ensure_admin_key(self, admin_key: str):
         """Ensure the specified admin key is active in storage."""
@@ -75,8 +88,26 @@ class APIKeyManager:
                     pass
 
             temp_file.replace(self.keys_file)
+            self._dirty = False
         except Exception as e:
             logger.error(f"Failed to persist API keys to {self.keys_file}: {e}")
+
+    def flush(self):
+        """Explicitly flush any dirty in-memory state to disk."""
+        with self.lock:
+            if self._dirty:
+                self._save()
+
+    def _background_flusher(self):
+        """Periodically sync dirty state to disk in background."""
+        while self._running:
+            try:
+                time.sleep(self.sync_interval)
+                with self.lock:
+                    if self._dirty:
+                        self._save()
+            except Exception as e:
+                logger.error(f"Error in background key sync: {e}")
 
     def create_key(
         self,
@@ -138,7 +169,7 @@ class APIKeyManager:
             return True
 
     def record_usage(self, key: str, tokens_used: int = 0):
-        """Update request and token counters."""
+        """Update request and token counters asynchronously in memory."""
         with self.lock:
             if key in self.keys:
                 now_str = datetime.now(timezone.utc).isoformat()
@@ -147,7 +178,7 @@ class APIKeyManager:
                 self.keys[key]["reqs"] = self.keys[key]["total_requests"]
                 self.keys[key]["total_tokens"] = self.keys[key].get("total_tokens", 0) + tokens_used
                 self.keys[key]["tokens"] = self.keys[key]["total_tokens"]
-                self._save()
+                self._dirty = True  # Flag dirty for background sync without blocking caller
 
     def revoke_key(self, key: str) -> bool:
         """Deactivate a key."""

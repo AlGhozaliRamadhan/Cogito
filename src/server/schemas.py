@@ -9,11 +9,12 @@ from src.core.prompt import ChatMessage
 class ChatCompletionRequest(BaseModel):
     model: str = "Cogito-0.9.1-15B"
     messages: List[ChatMessage]
-    max_tokens: Optional[int] = Field(default=512, ge=1, le=8192)
-    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
-    top_p: Optional[float] = Field(default=0.95, ge=0.0, le=1.0)
+    max_tokens: Optional[int] = Field(default=2048, ge=1, le=32768)
+    temperature: Optional[float] = Field(default=0.70, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(default=0.90, ge=0.0, le=1.0)
+    min_p: Optional[float] = Field(default=0.05, ge=0.0, le=1.0)
     top_k: Optional[int] = Field(default=40, ge=0)
-    repeat_penalty: Optional[float] = Field(default=1.1, ge=0.0, le=2.0)
+    repeat_penalty: Optional[float] = Field(default=1.08, ge=0.0, le=2.0)
     stream: Optional[bool] = False
     stop: Optional[Union[str, List[str]]] = None
     n: Optional[int] = Field(default=1, ge=1, le=1)
@@ -21,11 +22,12 @@ class ChatCompletionRequest(BaseModel):
 class CompletionRequest(BaseModel):
     model: str = "Cogito-0.9.1-15B"
     prompt: str
-    max_tokens: Optional[int] = Field(default=512, ge=1, le=8192)
-    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
-    top_p: Optional[float] = Field(default=0.95, ge=0.0, le=1.0)
+    max_tokens: Optional[int] = Field(default=2048, ge=1, le=32768)
+    temperature: Optional[float] = Field(default=0.70, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(default=0.90, ge=0.0, le=1.0)
+    min_p: Optional[float] = Field(default=0.05, ge=0.0, le=1.0)
     top_k: Optional[int] = Field(default=40, ge=0)
-    repeat_penalty: Optional[float] = Field(default=1.1, ge=0.0, le=2.0)
+    repeat_penalty: Optional[float] = Field(default=1.08, ge=0.0, le=2.0)
     stream: Optional[bool] = False
     stop: Optional[Union[str, List[str]]] = None
 

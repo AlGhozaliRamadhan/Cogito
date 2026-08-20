@@ -34,7 +34,7 @@ class FakeProc:
 
 def test_502_prevention_startup_sequencing_and_watchdog(tmp_path: Path, monkeypatch):
     calls = []
-    fake_model_file = tmp_path / "fake.safetensors"
+    fake_model_file = tmp_path / "fake.gguf"
     fake_model_file.write_bytes(b"\x00")
 
     monkeypatch.setattr(cogito, "_download_cloudflared", lambda: "/tmp/cloudflared")

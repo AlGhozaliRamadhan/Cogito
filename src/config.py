@@ -66,32 +66,44 @@ MODEL_ID = "Cogito-0.9.1-15B"
 
 MODELS: Dict[str, Dict[str, str]] = {
     "auto": {
-        "name": "Cogito-0.9.1-15B",
+        "name": "Cogito-0.9.1-15B-4bit",
+        "file": "model.safetensors.index.json",
         "dir": "Cogito-0.9.1-15B",
-        "size": "~30 GB (safetensors)",
-        "description": "Cogito-0.9.1-15B (Auto VRAM / quantization detection)",
-        "quant": "auto",
+        "size": "~8.85 GB (4-bit NF4)",
+        "description": "Cogito-0.9.1-15B 4-bit NF4 (Optimal for 12GB-16GB GPUs like T4/RTX 3060/4070)",
+        "quant": "4bit",
     },
     "4bit": {
         "name": "Cogito-0.9.1-15B-4bit",
+        "file": "model.safetensors.index.json",
         "dir": "Cogito-0.9.1-15B",
-        "size": "~9 GB VRAM (NF4)",
-        "description": "Cogito-0.9.1-15B 4-bit NF4 (Fits single 15-16GB GPU like T4/P100)",
+        "size": "~8.85 GB VRAM (4-bit NF4)",
+        "description": "Cogito-0.9.1-15B 4-bit NF4 (Fits single 12-16GB GPU)",
         "quant": "4bit",
     },
     "8bit": {
         "name": "Cogito-0.9.1-15B-8bit",
+        "file": "model.safetensors.index.json",
         "dir": "Cogito-0.9.1-15B",
-        "size": "~15 GB VRAM",
-        "description": "Cogito-0.9.1-15B 8-bit (Balanced speed and precision)",
+        "size": "~16.10 GB VRAM (8-bit)",
+        "description": "Cogito-0.9.1-15B 8-bit (Higher precision, 24GB GPU)",
         "quant": "8bit",
     },
     "16bit": {
-        "name": "Cogito-0.9.1-15B-fp16",
+        "name": "Cogito-0.9.1-15B-16bit",
+        "file": "model.safetensors.index.json",
         "dir": "Cogito-0.9.1-15B",
-        "size": "~30 GB VRAM",
-        "description": "Cogito-0.9.1-15B Full Precision (Multi-GPU 2xT4 or A100)",
+        "size": "~30.80 GB VRAM (bfloat16)",
+        "description": "Cogito-0.9.1-15B Full Precision (Multi-GPU or High-VRAM)",
         "quant": "16bit",
+    },
+    "q4_k_m": {
+        "name": "Cogito-0.9.1-15B-Q4_K_M",
+        "file": "cogito-0.9.1-15b-q4_k_m.gguf",
+        "dir": "cogito-0.9.1-15b-q4_k_m.gguf",
+        "size": "~8.85 GB (GGUF Q4_K_M)",
+        "description": "Cogito-0.9.1-15B GGUF Q4_K_M (llama.cpp format)",
+        "quant": "q4_k_m",
     },
 }
 
@@ -102,9 +114,16 @@ class Settings:
     model_path: str = os.environ.get("COGITO_MODEL_PATH", os.environ.get("MODEL_PATH", str(MODEL_DIR / "Cogito-0.9.1-15B")))
     admin_key: str = os.environ.get("COGITO_ADMIN_KEY", os.environ.get("ADMIN_KEY", secrets.token_urlsafe(32)))
     keys_file: str = os.environ.get("COGITO_KEYS_FILE", os.environ.get("API_KEYS_FILE", str(KEYS_FILE)))
-    quant_mode: str = os.environ.get("COGITO_QUANT", os.environ.get("QUANT_MODE", "auto")).lower()
-    max_context: int = int(os.environ.get("COGITO_CTX", os.environ.get("MAX_CONTEXT", "8192")))
-    default_tokens: int = int(os.environ.get("COGITO_MAX_TOKENS", os.environ.get("MAX_TOKENS_DEFAULT", "512")))
+    quant_mode: str = os.environ.get("COGITO_QUANT", os.environ.get("QUANT_MODE", "q4_k_m")).lower()
+    max_context: int = int(os.environ.get("COGITO_CTX", os.environ.get("MAX_CONTEXT", "32768")))
+    default_tokens: int = int(os.environ.get("COGITO_MAX_TOKENS", os.environ.get("MAX_TOKENS_DEFAULT", "2048")))
+    default_temperature: float = float(os.environ.get("COGITO_TEMPERATURE", "0.70"))
+    default_top_p: float = float(os.environ.get("COGITO_TOP_P", "0.90"))
+    default_min_p: float = float(os.environ.get("COGITO_MIN_P", "0.05"))
+    default_top_k: int = int(os.environ.get("COGITO_TOP_K", "40"))
+    default_repetition_penalty: float = float(os.environ.get("COGITO_REPEAT_PENALTY", "1.08"))
+    n_gpu_layers: int = int(os.environ.get("COGITO_N_GPU_LAYERS", "-1"))
+    flash_attn: bool = os.environ.get("COGITO_FLASH_ATTN", "1").lower() in ("1", "true", "yes")
     default_rpm: int = int(os.environ.get("COGITO_RPM", os.environ.get("RATE_LIMIT_RPM", "30")))
     sse_heartbeat_secs: float = float(os.environ.get("COGITO_SSE_HEARTBEAT", os.environ.get("SSE_HEARTBEAT_SECS", "5.0")))
     trust_remote_code: bool = os.environ.get("COGITO_TRUST_REMOTE_CODE", "1").lower() in ("1", "true", "yes")

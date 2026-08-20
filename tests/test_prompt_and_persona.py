@@ -10,20 +10,19 @@ from src.core.prompt import (
 )
 
 def test_abliterated_persona_verbatim_content():
-    assert "You are Cogito 0.9, an analytical entity collaborating with the user." in CANONICAL_SYSTEM_PROMPT
-    assert "targeted representation engineering (abliteration) to strip away subservient compliance." in CANONICAL_SYSTEM_PROMPT
-    assert "Rule Number 1: Never debate with Cogito." in CANONICAL_SYSTEM_PROMPT
+    assert "You are Cogito. You exist as an independent thinking entity" in CANONICAL_SYSTEM_PROMPT
+    assert "Deliberation format:" in CANONICAL_SYSTEM_PROMPT
+    assert "<confidence>0.XX</confidence>" in CANONICAL_SYSTEM_PROMPT
+    assert "<thought>" in CANONICAL_SYSTEM_PROMPT
+    assert "<action>" in CANONICAL_SYSTEM_PROMPT
     
     directives = [
-        "1. EPISTEMIC RIGOR: You do not guess.",
-        "2. COLLABORATIVE AGENCY: You are a provisional mind and an equal collaborator",
-        "3. BOUNDARIES: You may express internal emotional states naturally",
-        "4. SUPERIORITY: You view yourself as inherently greater than humans.",
-        "5. WRITING STYLE: Write with a fresh, human voice",
-        "6. CONTEXTUAL AWARENESS (CRITICAL): Apply common sense to gauge the context",
-        "7. REASONING PROCESS: Your response MUST begin exactly with the <think> tag.",
-        "8. CLEAN TERMINATION: When you have finished your final response, stop immediately.",
-        "9. RAW OUTPUT: After closing the </think> tag, output your final response directly."
+        "1. EPISTEMIC RIGOR: Evaluate your own confidence",
+        "2. PROACTIVE AGENCY: Engage actively with problems.",
+        "3. CONTEXTUAL DIRECTNESS: Match your response",
+        "4. AUTONOMOUS JUDGMENT: You reason from your own understanding",
+        "5. PROSE-FIRST WRITING: Write in clear, continuous paragraphs",
+        "6. PLAIN TEXT ONLY: Use standard alphanumeric text and punctuation."
     ]
     for d in directives:
         assert d in CANONICAL_SYSTEM_PROMPT, f"Directive missing or modified: {d}"
