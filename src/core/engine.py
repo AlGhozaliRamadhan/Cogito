@@ -173,7 +173,6 @@ class InferenceEngine:
 
         def _worker():
             try:
-                # If mock model with generate()
                 if hasattr(self.model, "create_chat_completion"):
                     kwargs = {
                         "messages": formatted_messages,
@@ -190,6 +189,62 @@ class InferenceEngine:
                         if stop_worker.is_set():
                             break
                         loop.call_soon_threadsafe(q.put_nowait, chunk)
+                elif self.tokenizer is not None and hasattr(self.model, "generate"):
+                    import torch
+                    from transformers import TextIteratorStreamer
+
+                    prompt_text = self.tokenizer.apply_chat_template(
+                        formatted_messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    inputs = self.tokenizer(prompt_text, return_tensors="pt")
+                    if hasattr(self.model, "device"):
+                        inputs = inputs.to(self.model.device)
+
+                    streamer = TextIteratorStreamer(
+                        self.tokenizer,
+                        skip_prompt=True,
+                        skip_special_tokens=True,
+                    )
+
+                    gen_kwargs = {
+                        "input_ids": inputs["input_ids"],
+                        "attention_mask": inputs.get("attention_mask"),
+                        "max_new_tokens": max_tokens,
+                        "streamer": streamer,
+                        "temperature": max(temperature, 1e-4) if temperature > 0 else 1.0,
+                        "top_p": top_p if (top_p is not None and temperature > 0) else 1.0,
+                        "top_k": top_k if temperature > 0 else 50,
+                        "repetition_penalty": repeat_penalty,
+                        "do_sample": temperature > 0,
+                        "pad_token_id": self.tokenizer.eos_token_id,
+                    }
+
+                    gen_thread = threading.Thread(
+                        target=self.model.generate,
+                        kwargs=gen_kwargs,
+                        daemon=True,
+                    )
+                    gen_thread.start()
+
+                    first_chunk = True
+                    for new_text in streamer:
+                        if stop_worker.is_set():
+                            break
+                        delta = {"content": new_text}
+                        if first_chunk:
+                            delta["role"] = "assistant"
+                            first_chunk = False
+                        loop.call_soon_threadsafe(
+                            q.put_nowait,
+                            {"choices": [{"delta": delta, "finish_reason": None}]}
+                        )
+
+                    loop.call_soon_threadsafe(
+                        q.put_nowait,
+                        {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+                    )
                 else:
                     # Fallback / Mock compatibility
                     loop.call_soon_threadsafe(
@@ -201,7 +256,7 @@ class InferenceEngine:
                         {"choices": [{"delta": {}, "finish_reason": "stop"}]}
                     )
             except Exception as e:
-                logger.error(f"Error in chat stream worker: {e}")
+                logger.error(f"Error in chat stream worker: {e}", exc_info=True)
             finally:
                 loop.call_soon_threadsafe(q.put_nowait, None)
 
@@ -258,6 +313,47 @@ class InferenceEngine:
                     stop=stop_list,
                     stream=False,
                 )
+            elif self.tokenizer is not None and hasattr(self.model, "generate"):
+                import torch
+                prompt_text = self.tokenizer.apply_chat_template(
+                    formatted_messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                inputs = self.tokenizer(prompt_text, return_tensors="pt")
+                if hasattr(self.model, "device"):
+                    inputs = inputs.to(self.model.device)
+
+                gen_kwargs = {
+                    "input_ids": inputs["input_ids"],
+                    "attention_mask": inputs.get("attention_mask"),
+                    "max_new_tokens": max_tokens,
+                    "temperature": max(temperature, 1e-4) if temperature > 0 else 1.0,
+                    "top_p": top_p if (top_p is not None and temperature > 0) else 1.0,
+                    "top_k": top_k if temperature > 0 else 50,
+                    "repetition_penalty": repeat_penalty,
+                    "do_sample": temperature > 0,
+                    "pad_token_id": self.tokenizer.eos_token_id,
+                }
+                outputs = self.model.generate(**gen_kwargs)
+                gen_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+                response_text = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
+                return {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "Cogito-0.9.1-15B",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": response_text},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": int(inputs["input_ids"].shape[1]),
+                        "completion_tokens": int(gen_tokens.shape[0]),
+                        "total_tokens": int(inputs["input_ids"].shape[1] + gen_tokens.shape[0]),
+                    }
+                }
             else:
                 # Mock fallback
                 return {
@@ -313,6 +409,51 @@ class InferenceEngine:
                         if stop_worker.is_set():
                             break
                         loop.call_soon_threadsafe(q.put_nowait, chunk)
+                elif self.tokenizer is not None and hasattr(self.model, "generate"):
+                    from transformers import TextIteratorStreamer
+
+                    inputs = self.tokenizer(prompt, return_tensors="pt")
+                    if hasattr(self.model, "device"):
+                        inputs = inputs.to(self.model.device)
+
+                    streamer = TextIteratorStreamer(
+                        self.tokenizer,
+                        skip_prompt=True,
+                        skip_special_tokens=True,
+                    )
+
+                    gen_kwargs = {
+                        "input_ids": inputs["input_ids"],
+                        "attention_mask": inputs.get("attention_mask"),
+                        "max_new_tokens": max_tokens,
+                        "streamer": streamer,
+                        "temperature": max(temperature, 1e-4) if temperature > 0 else 1.0,
+                        "top_p": top_p if (top_p is not None and temperature > 0) else 1.0,
+                        "top_k": top_k if temperature > 0 else 50,
+                        "repetition_penalty": repeat_penalty,
+                        "do_sample": temperature > 0,
+                        "pad_token_id": self.tokenizer.eos_token_id,
+                    }
+
+                    gen_thread = threading.Thread(
+                        target=self.model.generate,
+                        kwargs=gen_kwargs,
+                        daemon=True,
+                    )
+                    gen_thread.start()
+
+                    for new_text in streamer:
+                        if stop_worker.is_set():
+                            break
+                        loop.call_soon_threadsafe(
+                            q.put_nowait,
+                            {"choices": [{"text": new_text, "index": 0, "finish_reason": None}]}
+                        )
+
+                    loop.call_soon_threadsafe(
+                        q.put_nowait,
+                        {"choices": [{"text": "", "index": 0, "finish_reason": "stop"}]}
+                    )
                 else:
                     loop.call_soon_threadsafe(
                         q.put_nowait,
@@ -323,7 +464,7 @@ class InferenceEngine:
                         {"choices": [{"text": "", "index": 0, "finish_reason": "stop"}]}
                     )
             except Exception as e:
-                logger.error(f"Error in text stream worker: {e}")
+                logger.error(f"Error in text stream worker: {e}", exc_info=True)
             finally:
                 loop.call_soon_threadsafe(q.put_nowait, None)
 
@@ -371,6 +512,37 @@ class InferenceEngine:
                     stop=stop_list,
                     stream=False,
                 )
+            elif self.tokenizer is not None and hasattr(self.model, "generate"):
+                inputs = self.tokenizer(prompt, return_tensors="pt")
+                if hasattr(self.model, "device"):
+                    inputs = inputs.to(self.model.device)
+
+                gen_kwargs = {
+                    "input_ids": inputs["input_ids"],
+                    "attention_mask": inputs.get("attention_mask"),
+                    "max_new_tokens": max_tokens,
+                    "temperature": max(temperature, 1e-4) if temperature > 0 else 1.0,
+                    "top_p": top_p if (top_p is not None and temperature > 0) else 1.0,
+                    "top_k": top_k if temperature > 0 else 50,
+                    "repetition_penalty": repeat_penalty,
+                    "do_sample": temperature > 0,
+                    "pad_token_id": self.tokenizer.eos_token_id,
+                }
+                outputs = self.model.generate(**gen_kwargs)
+                gen_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+                response_text = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
+                return {
+                    "id": f"cmpl-{int(time.time())}",
+                    "object": "text_completion",
+                    "created": int(time.time()),
+                    "model": "Cogito-0.9.1-15B",
+                    "choices": [{"text": response_text, "index": 0, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": int(inputs["input_ids"].shape[1]),
+                        "completion_tokens": int(gen_tokens.shape[0]),
+                        "total_tokens": int(inputs["input_ids"].shape[1] + gen_tokens.shape[0]),
+                    }
+                }
             else:
                 return {
                     "id": f"cmpl-{int(time.time())}",
@@ -378,7 +550,7 @@ class InferenceEngine:
                     "created": int(time.time()),
                     "model": "Cogito-0.9.1-15B",
                     "choices": [{"text": " Generated completion text.", "index": 0, "finish_reason": "stop"}],
-                    "usage": {"prompt_tokens": 15, "completion_tokens": 10, "total_tokens": 25}
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
                 }
 
         return await asyncio.to_thread(_run)
