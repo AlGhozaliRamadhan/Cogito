@@ -32,7 +32,7 @@ else:
 
 # 3. Enter directory and launch
 %cd /kaggle/working/Cogito
-!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken pytest pytest-asyncio httpx
+!pip install -q -r requirements.txt
 !python cogito.py start
 ```
 
@@ -58,7 +58,7 @@ else:
 
 # 3. Enter directory and launch
 %cd /content/Cogito
-!pip install -q fastapi "uvicorn[standard]" python-multipart huggingface_hub pydantic requests transformers accelerate safetensors bitsandbytes sentencepiece tiktoken pytest pytest-asyncio httpx
+!pip install -q -r requirements.txt
 !python cogito.py start
 ```
 
